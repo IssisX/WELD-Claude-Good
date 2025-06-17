@@ -502,16 +502,22 @@
             box-shadow: 0 0 20px var(--accent-green);
         }
 
-        .connection-point.visible {
+        .connection-point.visible { /* This rule is duplicated, but harmless */
             opacity: 1;
             animation: pulse 2s infinite;
         }
 
-        .connection-point.snap-target {
+        .connection-point.snap-target { /* This rule is duplicated, but harmless */
             background: var(--accent-green);
             transform: translate(-50%, -50%) scale(1.5);
             box-shadow: 0 0 20px var(--accent-green);
         }
+
+        /* Connection point type styling */
+        .connection-point.cp-structural { /* Default is accent-blue, no change needed unless specific override */ }
+        .connection-point.cp-weapon_mount { background: var(--accent-orange); }
+        .connection-point.cp-wheel_axle { background: var(--accent-green); }
+        .connection-point.cp-wheel_hub { background: var(--text-secondary); border-color: var(--bg-primary); }
 
         @keyframes pulse {
             0%, 100% { 
@@ -725,6 +731,19 @@
                 </div>
             </div>
 
+            <!-- Structural Components -->
+            <div class="parts-category">
+                <div class="category-title">STRUCTURAL</div>
+                <div class="parts-grid">
+                    <div class="part-card" data-part="structuralBeam">
+                        <div class="part-cost">20</div>
+                        <div class="part-icon">➖</div>
+                        <div class="part-name">Structural Beam</div>
+                        <div class="part-stats">Scalable<br>L: 100, H: 10</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Weapons -->
             <div class="parts-category">
                 <div class="category-title">WEAPONS</div>
@@ -772,6 +791,25 @@
                         <div class="part-name">Heavy Wheel</div>
                         <div class="part-stats">HP: 150<br>Torque: High</div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Armor Components -->
+        <div class="parts-category">
+            <div class="category-title">ARMOR</div>
+            <div class="parts-grid">
+                <div class="part-card" data-part="armorPlate">
+                    <div class="part-cost">40</div> <div class="part-icon">🛡️</div>
+                    <div class="part-name">Armor Plate</div> <div class="part-stats">HP: 150, DR: 10%</div>
+                </div>
+                <div class="part-card" data-part="heavyArmorPlate">
+                    <div class="part-cost">70</div> <div class="part-icon">🧱</div>
+                    <div class="part-name">Heavy Armor</div> <div class="part-stats">HP: 250, DR: 25%</div>
+                </div>
+                <div class="part-card" data-part="angledArmorPlate">
+                    <div class="part-cost">50</div> <div class="part-icon">◤</div>
+                    <div class="part-name">Angled Plate</div> <div class="part-stats">HP: 120, DR: 15%</div>
                 </div>
             </div>
         </div>
@@ -931,6 +969,23 @@
     <script>
         // Game state and components
         const { Engine, Render, World, Bodies, Body, Events, Constraint, Runner } = Matter;
+
+        const PROJECTILE_TYPES = {
+            STANDARD: {
+                damage: 40, speed: 15, mass: 0.1, color: '#00d4ff',
+                displayName: 'Standard Shell'
+            },
+            ARMOR_PIERCING: {
+                damage: 30, speed: 20, mass: 0.15, color: '#f1c40f',
+                specialEffect: 'ignore_half_dr', displayName: 'AP Shell'
+            },
+            EXPLOSIVE: {
+                damage: 25, speed: 10, mass: 0.2, color: '#e67e22', // Base damage for direct hit
+                specialEffect: 'explode_on_impact', explosionRadius: 60,
+                explosionDamage: 45, // Damage for AoE effect
+                displayName: 'HE Shell'
+            }
+        };
         
         const gameState = {
             engine: null,
@@ -955,13 +1010,16 @@
             keys: {
                 a: false,
                 d: false,
-                space: false
+                space: false,
+                shift: false // Added for scaling modifier
             },
             
             // Drag state
             isDragging: false,
             dragPart: null,
             dragPreview: null,
+            dragPartAngle: 0, // Current rotation of the part being dragged
+            dragPartScale: 1.0, // Current scale of the part being dragged
             snapTarget: null,
             
             // Audio
@@ -977,9 +1035,9 @@
                     height: 50,
                     color: '#4a90e2',
                     connectionPoints: [
-                        { x: -40, y: 0 }, { x: 40, y: 0 },
-                        { x: 0, y: -25 }, { x: 0, y: 25 },
-                        { x: -25, y: 25 }, { x: 25, y: 25 }
+                        { x: -40, y: 0, type: 'structural' }, { x: 40, y: 0, type: 'structural' },
+                        { x: 0, y: -25, type: 'weapon_mount' }, { x: 0, y: 25, type: 'structural' },
+                        { x: -25, y: 25, type: 'wheel_axle' }, { x: 25, y: 25, type: 'wheel_axle' }
                     ]
                 },
                 lightChassis: {
@@ -990,8 +1048,8 @@
                     height: 40,
                     color: '#3498db',
                     connectionPoints: [
-                        { x: -30, y: 0 }, { x: 30, y: 0 },
-                        { x: 0, y: -20 }, { x: 0, y: 20 }
+                        { x: -30, y: 0, type: 'structural' }, { x: 30, y: 0, type: 'structural' },
+                        { x: 0, y: -20, type: 'weapon_mount' }, { x: 0, y: 20, type: 'wheel_axle' }
                     ]
                 },
                 spike: {
@@ -1002,7 +1060,7 @@
                     height: 20,
                     damage: 25,
                     color: '#e74c3c',
-                    connectionPoints: [{ x: -20, y: 0 }]
+                    connectionPoints: [{ x: -20, y: 0, type: 'structural' }] // Can attach to any structural point
                 },
                 hammer: {
                     label: 'hammer',
@@ -1010,22 +1068,38 @@
                     mass: 8,
                     width: 35,
                     height: 50,
-                    damage: 50,
-                    weaponType: 'melee',
-                    fireRate: 2000,
                     color: '#8e44ad',
-                    connectionPoints: [{ x: 0, y: 25 }]
+                    weaponType: 'melee_impact', // Updated
+                    baseDamage: 50,
+                    attackDuration: 350, // ms
+                    attackArc: Math.PI / 1.8, // radians
+                    impactVelocityThreshold: 0.3,
+                    fireRate: 1200, // ms
+                    connectionPoints: [{ x: 0, y: 25, type: 'structural' }] // Mounts via its base
+                },
+                spike: { // Spike doesn't "fire", it damages on collision if velocity is high enough
+                    label: 'spike',
+                    health: 60,
+                    mass: 4,
+                    width: 40,
+                    height: 20,
+                    color: '#e74c3c',
+                    weaponType: 'melee_piercing', // Updated
+                    baseDamage: 30,
+                    impactVelocityThreshold: 0.8,
+                    connectionPoints: [{ x: -20, y: 0, type: 'structural' }]
                 },
                 saw: {
                     label: 'saw',
                     health: 80,
                     mass: 6,
-                    radius: 20,
-                    damage: 15,
-                    weaponType: 'continuous',
-                    spinSpeed: 8,
+                    radius: 20, // Saws are circular
                     color: '#f39c12',
-                    connectionPoints: [{ x: 0, y: 0 }]
+                    weaponType: 'continuous_melee', // Updated
+                    baseDamagePerSecond: 25,
+                    targetAngularVelocity: Math.PI * 5, // rad/s
+                    spinUpAcceleration: Math.PI * 3, // rad/s^2
+                    connectionPoints: [{ x: 0, y: 0, type: 'structural' }] // Center mount
                 },
                 cannon: {
                     label: 'cannon',
@@ -1036,12 +1110,15 @@
                     damage: 40,
                     weaponType: 'projectile',
                     fireRate: 1500,
-                    projectileSpeed: 15,
+                    projectileSpeed: 15, // This might become redundant if speed is per projectile type
                     ammo: 10,
+                    maxAmmo: 10,
+                    currentProjectileType: 'STANDARD', // Default type
+                    availableProjectileTypes: ['STANDARD', 'ARMOR_PIERCING', 'EXPLOSIVE'], // Types this cannon can use
                     color: '#16a085',
-                    connectionPoints: [{ x: -25, y: 0 }]
+                    connectionPoints: [{ x: -25, y: 0, type: 'structural' }]
                 },
-                wheel: {
+                wheel: { // Wheels are special, they don't offer connection points but *seek* 'wheel_axle'
                     label: 'wheel',
                     health: 90,
                     mass: 6,
@@ -1049,9 +1126,9 @@
                     torque: 0.02,
                     color: '#34495e',
                     friction: 0.9,
-                    connectionPoints: []
+                    connectionPoints: [{ x:0, y:0, type: 'wheel_hub'}] // Represents its own axle point for connection
                 },
-                heavyWheel: {
+                heavyWheel: { // Similar to wheel
                     label: 'wheel',
                     health: 150,
                     mass: 10,
@@ -1059,7 +1136,62 @@
                     torque: 0.025,
                     color: '#2c3e50',
                     friction: 1.2,
-                    connectionPoints: []
+                    connectionPoints: [{ x:0, y:0, type: 'wheel_hub'}]
+                },
+                structuralBeam: {
+                    label: 'beam',
+                    health: 100,
+                    mass: 5, // Mass per unit length/scale
+                    width: 100, // Default width
+                    height: 10, // Default height
+                    color: '#7f8c8d',
+                    scalable: true,
+                    scaleDimension: 'width', // 'width', 'height', or 'both'
+                    scaleMin: 0.5,
+                    scaleMax: 3.0,
+                    defaultScale: 1.0,
+                    connectionPoints: [
+                        { x: -50, y: 0, type: 'structural' }, { x: 50, y: 0, type: 'structural' }
+                    ]
+                },
+                armorPlate: {
+                    label: 'armor',
+                    health: 150,
+                    mass: 8,
+                    width: 60,
+                    height: 30,
+                    color: '#95a5a6',
+                    damageResistance: 0.1,
+                    connectionPoints: [
+                        { x: -30, y: 0, type: 'structural' }, { x: 30, y: 0, type: 'structural' },
+                        { x: 0, y: -15, type: 'structural' }, { x: 0, y: 15, type: 'structural' }
+                    ]
+                },
+                heavyArmorPlate: {
+                    label: 'armor',
+                    health: 250,
+                    mass: 15,
+                    width: 70,
+                    height: 40,
+                    color: '#7f8c8d',
+                    damageResistance: 0.25,
+                    connectionPoints: [
+                        { x: -35, y: 0, type: 'structural' }, { x: 35, y: 0, type: 'structural' },
+                        { x: 0, y: -20, type: 'structural' }, { x: 0, y: 20, type: 'structural' }
+                    ]
+                },
+                angledArmorPlate: {
+                    label: 'armor',
+                    health: 120,
+                    mass: 6,
+                    vertices: [ { x: 0, y: -20 }, { x: -30, y: 10 }, { x: 30, y: 10 } ], // Triangle
+                    width: 60, // Approx for card
+                    height: 30, // Approx for card
+                    color: '#b0bec5',
+                    damageResistance: 0.15,
+                    connectionPoints: [
+                        { x: 0, y: -15, type: 'structural' }, { x: -20, y: 5, type: 'structural' }, { x: 20, y: 5, type: 'structural' }
+                    ]
                 }
             }
         };
@@ -1161,6 +1293,35 @@
             document.getElementById('loadBtn').addEventListener('click', loadRobot);
             document.getElementById('battleBtn').addEventListener('click', startBattle);
             document.getElementById('backToWorkshop').addEventListener('click', backToWorkshop);
+
+            // Mouse wheel listener for part rotation
+            document.addEventListener('wheel', function(e) {
+                if (gameState.isDragging && gameState.toolMode === 'build' && gameState.dragPreview && gameState.dragPart) {
+                    e.preventDefault();
+                    const componentDef = gameState.components[gameState.dragPart];
+
+                    if (gameState.keys.shift && componentDef && componentDef.scalable) {
+                        // Scaling logic
+                        const increment = e.deltaY > 0 ? -0.1 : 0.1; // Wheel down scales down, wheel up scales up
+                        let newScale = parseFloat((gameState.dragPartScale + increment).toFixed(2));
+                        newScale = Math.max(componentDef.scaleMin, Math.min(componentDef.scaleMax, newScale));
+                        gameState.dragPartScale = newScale;
+                    } else {
+                        // Rotation logic (existing)
+                        const rotationStep = Math.PI / 16;
+                        if (e.deltaY < 0) { // Wheel up
+                            gameState.dragPartAngle += rotationStep;
+                        } else { // Wheel down
+                            gameState.dragPartAngle -= rotationStep;
+                        }
+                        // Normalize angle (0 to 2*PI)
+                        gameState.dragPartAngle = (gameState.dragPartAngle % (2 * Math.PI) + (2 * Math.PI)) % (2 * Math.PI);
+                    }
+
+                    // Update dragPreview transform for both rotation and scale
+                    gameState.dragPreview.style.transform = `rotate(${gameState.dragPartAngle}rad) scale(${gameState.dragPartScale})`;
+                }
+            }, { passive: false }); // passive:false to allow preventDefault
         }
 
         function setupAudio() {
@@ -1399,6 +1560,16 @@
             playSound('click');
         }
 
+        function getColorForType(type) {
+            switch (type) {
+                case 'structural': return 'var(--accent-blue)';
+                case 'weapon_mount': return 'var(--accent-orange)';
+                case 'wheel_axle': return 'var(--accent-green)';
+                case 'wheel_hub': return 'var(--text-secondary)'; // Color for wheel's own hub
+                default: return 'var(--border-color)';
+            }
+        }
+
         function createDragPreview(e) {
             const preview = document.createElement('div');
             preview.className = 'drag-preview';
@@ -1412,6 +1583,23 @@
             
             gameState.dragPreview = preview;
             
+            // Add type indicator for primary connection point
+            const partDataType = e.currentTarget.dataset.part;
+            const component = gameState.components[partDataType];
+            if (component.connectionPoints && component.connectionPoints.length > 0) {
+                const primaryPointType = component.connectionPoints[0].type || 'structural';
+                const typeIndicator = document.createElement('div');
+                typeIndicator.style.width = '8px';
+                typeIndicator.style.height = '8px';
+                typeIndicator.style.position = 'absolute';
+                typeIndicator.style.top = '2px';
+                typeIndicator.style.right = '2px';
+                typeIndicator.style.borderRadius = '2px';
+                typeIndicator.style.backgroundColor = getColorForType(primaryPointType);
+                typeIndicator.style.border = '1px solid white';
+                preview.appendChild(typeIndicator);
+            }
+
             // Position at cursor
             const rect = e.currentTarget.getBoundingClientRect();
             preview.style.left = rect.left + 'px';
@@ -1443,22 +1631,30 @@
             
             gameState.playerRobot.forEach(part => {
                 if (!part.customProps.connectionPoints) return;
+
+                const partAngle = part.customProps.angle || 0;
+                const cosAngle = Math.cos(partAngle);
+                const sinAngle = Math.sin(partAngle);
                 
-                part.customProps.connectionPoints.forEach(point => {
-                    const worldX = part.position.x + point.x;
-                    const worldY = part.position.y + point.y;
+                part.customProps.connectionPoints.forEach(localCPoint => { // Renamed 'point' to 'localCPoint' for clarity
+                    // Rotate local connection point by part's angle
+                    const rotatedLocalX = localCPoint.x * cosAngle - localCPoint.y * sinAngle;
+                    const rotatedLocalY = localCPoint.x * sinAngle + localCPoint.y * cosAngle;
+
+                    const worldX = part.position.x + rotatedLocalX;
+                    const worldY = part.position.y + rotatedLocalY;
                     
                     const distance = Math.sqrt(
                         Math.pow(canvasX - worldX, 2) + 
                         Math.pow(canvasY - worldY, 2)
                     );
                     
-                    if (distance < 50 && distance < closestDistance) {
+                    if (distance < 50 && distance < closestDistance) { // Snap radius of 50px
                         closestDistance = distance;
                         gameState.snapTarget = {
                             part: part,
-                            point: { x: worldX, y: worldY },
-                            localPoint: point
+                            point: { x: worldX, y: worldY }, // World coordinates of the snap point
+                            localPoint: localCPoint // Original local coordinates on the target part
                         };
                     }
                 });
@@ -1490,12 +1686,14 @@
                     spawnY = gameState.snapTarget.point.y;
                 }
                 
-                createPart(gameState.dragPart, spawnX, spawnY);
+                createPart(gameState.dragPart, spawnX, spawnY, gameState.dragPartAngle, gameState.dragPartScale);
             }
             
             // Cleanup
             gameState.isDragging = false;
             gameState.dragPart = null;
+            gameState.dragPartAngle = 0; // Reset angle
+            gameState.dragPartScale = 1.0; // Reset scale
             gameState.snapTarget = null;
             
             if (gameState.dragPreview) {
@@ -1507,16 +1705,67 @@
         }
 
         // Part Creation
-        function createPart(partType, x, y) {
+        function createPart(partType, x, y, angle = 0, scale = 1.0) { // Added scale parameter
             const component = gameState.components[partType];
             if (!component) return;
             
             let body;
+            let actualWidth = component.width;
+            let actualHeight = component.height;
+            let actualMass = component.mass;
+            // Ensure connectionPoints is an empty array if not defined, to prevent errors with .map
+            let finalConnectionPoints = [];
+
+            if (component.connectionPoints && component.connectionPoints.length > 0) {
+                finalConnectionPoints = component.connectionPoints.map(p => ({ ...p, type: p.type || 'structural' }));
+            }
+
+
+            if (component.scalable) {
+                if (component.scaleDimension === 'width' || component.scaleDimension === 'both') {
+                    actualWidth *= scale;
+                }
+                if (component.scaleDimension === 'height' || component.scaleDimension === 'both') {
+                    actualHeight *= scale;
+                }
+                actualMass *= scale; // Simplistic mass scaling
+
+                if (component.connectionPoints && component.connectionPoints.length > 0) {
+                    // Re-map finalConnectionPoints if scaling applies, preserving type
+                    finalConnectionPoints = finalConnectionPoints.map(p => {
+                        let spx = p.x, spy = p.y; // Original x,y already have type from previous map
+                        if (component.scaleDimension === 'width' || component.scaleDimension === 'both') spx *= scale;
+                        // If height scaling affects y connection points, add here:
+                        // if (component.scaleDimension === 'height' || component.scaleDimension === 'both') spy *= scale;
+                        return { x: spx, y: spy, type: p.type }; // Keep existing type
+                    });
+                }
+            }
             
-            if (component.radius) {
+            if (component.vertices) {
+                // Polygonal part
+                // Note: Matter.js Bodies.fromVertices automatically centers the vertices.
+                // x, y are the desired center of mass for the polygon.
+                // actualWidth/Height might need to be derived from vertices for some calculations,
+                // but for body creation, vertices are primary. Mass is actualMass.
+                body = Bodies.fromVertices(x, y, component.vertices, {
+                    mass: actualMass,
+                    friction: component.friction || 0.3, // Add friction if not defined
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            } else if (component.radius) {
                 // Circular part (wheel, saw)
-                body = Bodies.circle(x, y, component.radius, {
-                    mass: component.mass,
+                // Assuming radius parts are not scalable in this logic branch yet or scale is 1.0
+                let actualRadius = component.radius;
+                if (component.scalable && (component.scaleDimension === 'radius' || component.scaleDimension === 'both')) {
+                     actualRadius *= scale;
+                }
+                body = Bodies.circle(x, y, actualRadius, {
+                    mass: actualMass,
                     friction: component.friction || 0.3,
                     render: {
                         fillStyle: component.color,
@@ -1526,8 +1775,9 @@
                 });
             } else {
                 // Rectangular part
-                body = Bodies.rectangle(x, y, component.width, component.height, {
-                    mass: component.mass,
+                body = Bodies.rectangle(x, y, actualWidth, actualHeight, {
+                    mass: actualMass,
+                    friction: component.friction || 0.3, // Add friction if not defined
                     render: {
                         fillStyle: component.color,
                         strokeStyle: '#ffffff',
@@ -1536,16 +1786,47 @@
                 });
             }
             
-            // Add custom properties
+            // Standardize custom properties
             body.customProps = {
-                ...component,
+                label: component.label,
+                partType: partType, // Crucial for identifying component type later
                 health: component.health,
-                maxHealth: component.health,
+                maxHealth: component.health, // Initialize maxHealth
+                mass: actualMass, // Actual mass after scaling
+                damageResistance: component.damageResistance || 0, // Default to 0 if undefined
+                damage: component.damage || 0,
+                weaponType: component.weaponType,
+                fireRate: component.fireRate,
+                projectileSpeed: component.projectileSpeed,
+                ammo: component.ammo !== undefined ? component.ammo : -1,
+                spinSpeed: component.spinSpeed,
+                torque: component.torque,
+                friction: component.friction || 0.3,
+                angle: angle,
+                scale: scale,
+                connectionPoints: finalConnectionPoints, // Use final (potentially scaled) connection points
                 lastFired: 0,
-                ammo: component.ammo || -1,
-                partType: partType
+                // Weapon specific projectile properties
+                maxAmmo: component.maxAmmo,
+                currentProjectileType: component.currentProjectileType,
+                availableProjectileTypes: component.availableProjectileTypes,
+                // Melee weapon properties
+                baseDamage: component.baseDamage, // For Hammer, Spike
+                attackDuration: component.attackDuration, // Hammer
+                attackArc: component.attackArc, // Hammer
+                impactVelocityThreshold: component.impactVelocityThreshold, // Hammer, Spike
+                baseDamagePerSecond: component.baseDamagePerSecond, // Saw
+                targetAngularVelocity: component.targetAngularVelocity, // Saw
+                spinUpAcceleration: component.spinUpAcceleration, // Saw
+                // Initial states for melee weapons
+                isSwinging: component.weaponType === 'melee_impact' ? false : undefined,
+                swingProgressTime: component.weaponType === 'melee_impact' ? 0 : undefined,
+                initialAngleCaptured: component.weaponType === 'melee_impact' ? false : undefined,
+                isSpinningActive: component.weaponType === 'continuous_melee' ? false : undefined
             };
             
+            Body.setAngle(body, angle); // Set initial angle for Matter.js body
+
             // Set collision group
             body.collisionFilter.group = -1;
             
@@ -1560,11 +1841,31 @@
             
             // Create constraint if snapped
             if (gameState.snapTarget) {
+                const bodyA = gameState.snapTarget.part;
+                const bodyB = body;
+                const pointA = gameState.snapTarget.localPoint;
+
+                // Calculate pointB - the local point on bodyB that corresponds to the world snap point
+                const worldSnapX = gameState.snapTarget.point.x;
+                const worldSnapY = gameState.snapTarget.point.y;
+
+                // bodyB.position is the spawnX, spawnY passed to createPart
+                const dx = worldSnapX - bodyB.position.x;
+                const dy = worldSnapY - bodyB.position.y;
+
+                const angleB = angle; // Angle of the new body (bodyB)
+                const cos_angleB = Math.cos(-angleB); // Use negative angle for inverse transform
+                const sin_angleB = Math.sin(-angleB);
+
+                const localBx = dx * cos_angleB - dy * sin_angleB;
+                const localBy = dx * sin_angleB + dy * cos_angleB;
+                const pointB = { x: localBx, y: localBy };
+
                 const constraint = Constraint.create({
-                    bodyA: gameState.snapTarget.part,
-                    bodyB: body,
-                    pointA: gameState.snapTarget.localPoint,
-                    pointB: { x: 0, y: 0 },
+                    bodyA: bodyA,
+                    bodyB: bodyB,
+                    pointA: pointA,
+                    pointB: pointB,
                     length: 0,
                     stiffness: 1,
                     render: { visible: false }
@@ -1663,17 +1964,38 @@
                 Math.min(100, ((weldedCount / totalConnections) * 50) + 50) : 0;
 
             // Calculate Performance Ratings
+            const componentDefinitions = gameState.components; // For easy access
             const wheelCount = robot.filter(p => p.customProps.label === 'wheel').length;
             const weaponCount = robot.filter(p => p.customProps.damage > 0).length;
-            const armorCount = robot.filter(p => p.customProps.label === 'armor').length;
             
+            const armorComps = robot.filter(p => p.customProps.label === 'armor');
+            const armorCount = armorComps.length;
+
+            const totalWeightedDR = robot.reduce((sum, p) => {
+                const dr = p.customProps.damageResistance || 0;
+                // const partDef = componentDefinitions[p.customProps.partType]; // p.customProps.partType should be reliable
+                const partMaxHealth = p.customProps.maxHealth || 0; // Use maxHealth from customProps directly
+                return sum + dr * partMaxHealth;
+            }, 0);
+
+            const totalMaxHealthOfRobot = robot.reduce((sum, p) => {
+                const partMaxHealth = p.customProps.maxHealth || 0; // Use maxHealth from customProps
+                return sum + partMaxHealth;
+            }, 0);
+
+            const averageEffectiveDR = totalMaxHealthOfRobot > 0 ? totalWeightedDR / totalMaxHealthOfRobot : 0;
+
+            const calculatedDefenseRating = Math.min(5, Math.max(1,
+                Math.round((armorCount * 0.5) + (averageEffectiveDR * 15.0))
+            ));
+
             // Balance based on center of mass position relative to robot bounds
             const balanceScore = calculateBalanceScore(centerOfMass, { minX, maxX, minY, maxY });
 
             const performance = {
                 speed: Math.min(5, Math.max(1, Math.floor((wheelCount * 1.5) - (totalMass / 20)))),
                 power: Math.min(5, Math.max(1, weaponCount + Math.floor(totalMass / 15))),
-                defense: Math.min(5, Math.max(1, armorCount + Math.floor(robot.length / 3))),
+                defense: calculatedDefenseRating,
                 balance: Math.min(5, Math.max(1, balanceScore))
             };
 
@@ -1882,19 +2204,29 @@
             gameState.playerRobot.forEach(part => {
                 if (!part.customProps.connectionPoints) return;
                 
+                const partAngle = part.customProps.angle || 0;
+                const cosAngle = Math.cos(partAngle);
+                const sinAngle = Math.sin(partAngle);
+
                 part.customProps.connectionPoints.forEach(point => {
-                    const worldX = part.position.x + point.x;
-                    const worldY = part.position.y + point.y;
+                    // Rotate local connection point by part's angle
+                    const rotatedLocalX = point.x * cosAngle - point.y * sinAngle;
+                    const rotatedLocalY = point.x * sinAngle + point.y * cosAngle;
+
+                    const worldX = part.position.x + rotatedLocalX;
+                    const worldY = part.position.y + rotatedLocalY;
                     
                     const indicator = document.createElement('div');
                     indicator.className = 'connection-point';
+                    const pointType = point.type || 'structural';
+                    indicator.classList.add('cp-' + pointType);
                     
                     // Show during drag or if it's the snap target
                     if (gameState.isDragging) {
                         indicator.classList.add('visible');
                         
                         if (gameState.snapTarget && gameState.snapTarget.part === part &&
-                            gameState.snapTarget.localPoint === point) {
+                            gameState.snapTarget.localPoint === point) { // Ensure 'point' here refers to the original localCPoint from part.customProps.connectionPoints
                             indicator.classList.add('snap-target');
                         }
                     }
@@ -2092,8 +2424,15 @@
             });
             
             if (gameState.keys.space) {
-                fireWeapons();
+                fireWeapons(); // This will activate hammers if conditions met
             }
+
+            // Update continuous weapon states based on input (e.g., Saw)
+            gameState.playerRobot.forEach(part => {
+                if (part.customProps && part.customProps.weaponType === 'continuous_melee') {
+                    part.customProps.isSpinningActive = gameState.keys.space; // Active if space is held
+                }
+            });
         }
 
         function handleEnemyAI() {
@@ -2137,14 +2476,24 @@
                 
                 switch (part.customProps.weaponType) {
                     case 'projectile':
-                        if (part.customProps.ammo > 0 || part.customProps.ammo === -1) {
-                            fireProjectile(part);
-                            if (part.customProps.ammo > 0) part.customProps.ammo--;
+                        // Check ammo only if the weapon is designed to use ammo (maxAmmo > 0)
+                        if (part.customProps.maxAmmo > 0 && part.customProps.ammo === 0) {
+                            // console.log(`${part.customProps.partType} out of ammo!`); // Optional: UI feedback
+                            return;
+                        }
+                        fireProjectile(part); // fireProjectile now handles its own ammo decrement
+                        part.customProps.lastFired = currentTime;
+                        break;
+                    case 'melee_impact': // Hammer activation
+                        if (!part.customProps.isSwinging && currentTime - part.customProps.lastFired >= part.customProps.fireRate) {
+                            part.customProps.isSwinging = true;
+                            part.customProps.swingProgressTime = 0;
                             part.customProps.lastFired = currentTime;
+                            part.customProps.initialAngleCaptured = false;
                         }
                         break;
-                    case 'melee':
-                        Body.setAngularVelocity(part, 0.5);
+                    case 'melee': // Generic or old melee, might need to phase out or assign to specific types
+                        Body.setAngularVelocity(part, 0.5); // Example old behavior
                         part.customProps.lastFired = currentTime;
                         break;
                 }
@@ -2152,42 +2501,117 @@
         }
 
         function fireProjectile(weapon) {
-            const angle = weapon.angle;
-            const speed = weapon.customProps.projectileSpeed || 10;
-            
-            const startX = weapon.position.x + Math.cos(angle) * 40;
-            const startY = weapon.position.y + Math.sin(angle) * 40;
-            
-            const projectile = Bodies.circle(startX, startY, 4, {
-                mass: 0.1,
-                render: { fillStyle: '#00d4ff', strokeStyle: '#ffffff', lineWidth: 1 }
+            const weaponProps = weapon.customProps;
+            const projectileTypeKey = weaponProps.currentProjectileType || 'STANDARD';
+            const projectileData = PROJECTILE_TYPES[projectileTypeKey] || PROJECTILE_TYPES.STANDARD;
+
+            const angle = weapon.angle; // Angle of the weapon part itself
+            const speed = projectileData.speed;
+            const mass = projectileData.mass;
+            const color = projectileData.color;
+            const projectileRadius = 4; // Example radius, could be per-type
+
+            // Calculate start position relative to weapon muzzle (assuming weapon length of ~40 units)
+            // This might need adjustment based on actual weapon part dimensions and connection point
+            const muzzleOffset = (weaponProps.width || 40) / 2 + projectileRadius;
+            const startX = weapon.position.x + Math.cos(angle) * muzzleOffset;
+            const startY = weapon.position.y + Math.sin(angle) * muzzleOffset;
+
+            const projectile = Bodies.circle(startX, startY, projectileRadius, {
+                mass: mass,
+                friction: 0.05, // Low friction for projectiles
+                frictionAir: 0.005, // Some air resistance
+                render: { fillStyle: color, strokeStyle: '#ffffff', lineWidth: 1 }
             });
             
             projectile.customProps = {
                 label: 'projectile',
-                damage: weapon.customProps.damage,
+                damage: projectileData.damage,
                 isProjectile: true,
                 lifetime: 3000,
-                birthTime: Date.now()
+                birthTime: Date.now(),
+                projectileType: projectileTypeKey,
+                specialEffect: projectileData.specialEffect,
+                explosionRadius: projectileData.explosionRadius,
+                explosionDamage: projectileData.explosionDamage,
+                sourceWeaponPartType: weaponProps.partType
             };
             
-            projectile.collisionFilter.group = -1;
+            // Ensure projectiles from player and enemy don't collide with their source robot initially
+            projectile.collisionFilter.group = weapon.collisionFilter.group;
             
             Body.setVelocity(projectile, {
                 x: Math.cos(angle) * speed,
                 y: Math.sin(angle) * speed
             });
             
+            // Apply a small impulse force to make sure it clears the weapon
+            Body.applyForce(projectile, projectile.position, {
+                 x: Math.cos(angle) * 0.001 * speed, // Small nudge
+                 y: Math.sin(angle) * 0.001 * speed
+            });
+
             World.add(gameState.engine.world, projectile);
+
+            if (weaponProps.ammo > 0) { // Only decrement if not infinite
+                weaponProps.ammo--;
+            }
             
             playSound('fire');
         }
 
         function updateWeapons() {
-            // Update spinning weapons
+            // Update spinning weapons and melee animations
+            const timeDeltaSec = gameState.engine.timing.delta / 1000;
+
             gameState.playerRobot.concat(gameState.enemyRobot).forEach(part => {
-                if (part.customProps && part.customProps.spinSpeed) {
-                    Body.setAngularVelocity(part, part.customProps.spinSpeed);
+                if (!part.customProps) return;
+
+                // Hammer Swing Animation
+                if (part.customProps.weaponType === 'melee_impact' && part.customProps.isSwinging) {
+                    if (!part.customProps.initialAngleCaptured) {
+                        part.customProps.initialSwingAngle = part.angle; // Capture angle relative to parent/world
+                        part.customProps.initialAngleCaptured = true;
+                    }
+                    part.customProps.swingProgressTime += gameState.engine.timing.delta;
+                    const progress = part.customProps.swingProgressTime / part.customProps.attackDuration;
+
+                    if (progress >= 1) {
+                        part.customProps.isSwinging = false;
+                        part.customProps.initialAngleCaptured = false;
+                        Body.setAngle(part, part.customProps.initialSwingAngle); // Reset to initial angle
+                    } else {
+                        const swingPhase = Math.sin(progress * Math.PI); // Results in 0 -> 1 -> 0 path
+                        const angleOffset = swingPhase * (part.customProps.attackArc / 2);
+                        // Assuming positive angle is counter-clockwise. Swing "down" might be -angleOffset or + depending on mount.
+                        // For a typical hammer, mounted to swing "forward/down", this might be initialAngle - offset.
+                        Body.setAngle(part, part.customProps.initialSwingAngle - angleOffset);
+                    }
+                }
+
+                // Saw Spin Logic
+                if (part.customProps.weaponType === 'continuous_melee') {
+                    const targetAV = part.customProps.targetAngularVelocity;
+                    const spinAccel = part.customProps.spinUpAcceleration;
+                    let currentAV = part.angularVelocity;
+                    let newAV = currentAV;
+
+                    if (part.customProps.isSpinningActive) { // isSpinningActive is set by player input
+                        if (Math.abs(currentAV) < Math.abs(targetAV)) {
+                             newAV += Math.sign(targetAV) * spinAccel * timeDeltaSec;
+                        }
+                        // Clamp to targetAV
+                        if (Math.sign(targetAV) > 0) newAV = Math.min(newAV, targetAV);
+                        else newAV = Math.max(newAV, targetAV);
+                    } else {
+                        newAV *= 0.95; // Dampen if not active
+                        if (Math.abs(newAV) < 0.01) newAV = 0;
+                    }
+                    if (Math.abs(newAV - currentAV) > 0.001) { // Only set if changed significantly
+                       Body.setAngularVelocity(part, newAV);
+                    }
+                } else if (part.customProps.spinSpeed) { // Legacy spinSpeed for other continuous weapons (if any)
+                     Body.setAngularVelocity(part, part.customProps.spinSpeed);
                 }
             });
             
@@ -2247,6 +2671,60 @@
             }
         }
 
+        // Melee Collision Processing
+        function processMeleeHit(weaponBody, targetBody, pair) {
+            if (!weaponBody.customProps || !targetBody.customProps || weaponBody.collisionFilter.group === targetBody.collisionFilter.group) {
+                return; // No self-collision damage, or no custom props
+            }
+
+            const wProps = weaponBody.customProps;
+            const tProps = targetBody.customProps; // Target properties, not used yet but good to have
+
+            const relativeVelocity = Matter.Vector.sub(weaponBody.velocity, targetBody.velocity);
+            const collisionNormal = pair.collision.normal; // Normal on targetBody
+            const impactSpeed = Math.abs(Matter.Vector.dot(relativeVelocity, collisionNormal));
+
+            // Hammer Impact
+            if (wProps.weaponType === 'melee_impact' && wProps.isSwinging && impactSpeed >= wProps.impactVelocityThreshold) {
+                const swingEffectiveness = Math.sin((wProps.swingProgressTime / wProps.attackDuration) * Math.PI); // Peak at mid-swing
+                const damage = wProps.baseDamage * swingEffectiveness;
+                if (damage > 0) {
+                    applyDamage(targetBody, damage, 0);
+                    playSound('hit'); // Specific hammer hit sound could be better
+                    wProps.isSwinging = false; // Typically one hit per swing action
+                    // console.log(`Hammer hit: ${damage.toFixed(1)} (speed: ${impactSpeed.toFixed(1)}, effectiveness: ${swingEffectiveness.toFixed(2)})`);
+                }
+            }
+
+            // Spike Piercing
+            else if (wProps.weaponType === 'melee_piercing' && impactSpeed >= wProps.impactVelocityThreshold) {
+                // Scale damage slightly with how much threshold is exceeded
+                const damage = wProps.baseDamage * (impactSpeed / (wProps.impactVelocityThreshold + Math.max(1, impactSpeed)));
+                if (damage > 0) {
+                    applyDamage(targetBody, damage, 0); // Piercing might have some DR ignore later
+                    playSound('hit'); // Specific spike hit sound
+                    // console.log(`Spike hit: ${damage.toFixed(1)} (speed: ${impactSpeed.toFixed(1)})`);
+                }
+            }
+
+            // Saw Continuous Damage
+            else if (wProps.weaponType === 'continuous_melee' && wProps.isSpinningActive) {
+                const minEffectiveAVRatio = 0.3; // Must be spinning at least 30% of target speed
+                const currentEffectiveness = wProps.targetAngularVelocity === 0 ? 0 : Math.abs(weaponBody.angularVelocity / wProps.targetAngularVelocity);
+
+                if (currentEffectiveness >= minEffectiveAVRatio) {
+                    const damageThisFrame = wProps.baseDamagePerSecond * (gameState.engine.timing.delta / 1000) * currentEffectiveness;
+                    if (damageThisFrame > 0) {
+                        applyDamage(targetBody, damageThisFrame, 0);
+                        // Continuous sound for saw might be handled in updateWeapons or via a flag set here
+                        // playSound('saw_grind'); // very short, or managed by an active sound loop
+                        // console.log(`Saw hit: ${damageThisFrame.toFixed(1)} (effectiveness: ${currentEffectiveness.toFixed(2)})`);
+                    }
+                }
+            }
+        }
+
+
         // Collision System
         function handleCollisions(event) {
             if (gameState.mode !== 'battle') return;
@@ -2254,29 +2732,43 @@
             event.pairs.forEach(pair => {
                 const { bodyA, bodyB } = pair;
                 
-                // Handle projectile hits
-                handleProjectileHit(bodyA, bodyB);
+                // Handle projectile hits first
+                handleProjectileHit(bodyA, bodyB); // This will also call applyDamage
+                handleProjectileHit(bodyB, bodyA); // Check other way around
+
+                // Process Melee Hits
+                processMeleeHit(bodyA, bodyB, pair);
+                processMeleeHit(bodyB, bodyA, pair);
                 
-                // Handle robot collisions
-                if (bodyA.collisionFilter.group !== bodyB.collisionFilter.group) {
+                // Handle generic robot body collisions (ramming) - ensure not to double-count damage from melee
+                // Only apply ramming if neither part is an active melee weapon that just hit
+                // This simple check might not be enough if melee hits don't always stop further processing.
+                // For now, we assume melee hits are primary and ramming is secondary.
+                // A more robust system might mark bodies that dealt/took melee damage in this tick.
+                const bodyACustomProps = bodyA.customProps || {};
+                const bodyBCustomProps = bodyB.customProps || {};
+
+                let isBodyAMeleeWeapon = bodyACustomProps.weaponType && bodyACustomProps.weaponType.includes('melee');
+                let isBodyBMeleeWeapon = bodyBCustomProps.weaponType && bodyBCustomProps.weaponType.includes('melee');
+
+                // If a melee weapon was involved and potentially did damage, skip ramming for that pair this tick.
+                // This is a simplification. A proper solution might involve a flag on the body if it has dealt damage.
+                if ( (isBodyAMeleeWeapon && bodyACustomProps.isSwinging) || (isBodyAMeleeWeapon && bodyACustomProps.isSpinningActive) ||
+                     (isBodyBMeleeWeapon && bodyBCustomProps.isSwinging) || (isBodyBMeleeWeapon && bodyBCustomProps.isSpinningActive) ) {
+                    // Melee interaction likely handled by processMeleeHit, consider skipping ramming.
+                } else if (bodyA.collisionFilter.group !== bodyB.collisionFilter.group) { // Ensure they are on different robots
                     const speed = pair.collision.speed || 0;
-                    
-                    if (speed > 2) {
-                        let damageA = speed * 2;
-                        let damageB = speed * 2;
+                    if (speed > 2) { // Ramming speed threshold
+                        // Generic ramming damage, could be lower than weapon damage
+                        const ramDamageFactor = 1; // Lower factor for ramming vs weapons
+                        let damage = speed * ramDamageFactor;
                         
-                        // Add weapon damage
-                        if (bodyA.customProps && bodyA.customProps.damage) {
-                            damageB += bodyA.customProps.damage;
-                        }
-                        if (bodyB.customProps && bodyB.customProps.damage) {
-                            damageA += bodyB.customProps.damage;
-                        }
+                        // Apply ramming damage, no DR ignore for ramming by default
+                        applyDamage(bodyA, damage, 0);
+                        applyDamage(bodyB, damage, 0);
                         
-                        applyDamage(bodyA, damageA);
-                        applyDamage(bodyB, damageB);
-                        
-                        playSound('hit');
+                        // console.log(`Ramming damage: ${damage.toFixed(1)}`);
+                        playSound('hit'); // Generic hit sound for ramming
                     }
                 }
             });
@@ -2295,19 +2787,71 @@
             }
             
             if (projectile && target && projectile.collisionFilter.group !== target.collisionFilter.group) {
-                applyDamage(target, projectile.customProps.damage);
-                World.remove(gameState.engine.world, projectile);
+                // Retrieve projectile-specific data for effects
+                const projectileTypeKey = projectile.customProps.projectileType || 'STANDARD';
+                const projectileData = PROJECTILE_TYPES[projectileTypeKey] || PROJECTILE_TYPES.STANDARD;
+
+                // Direct Hit Damage
+                let ignoreDRFraction = 0;
+                if (projectile.customProps.specialEffect === 'ignore_half_dr') {
+                    ignoreDRFraction = 0.5;
+                }
+                applyDamage(target, projectile.customProps.damage, ignoreDRFraction);
+
+                // Explosive Effect (if applicable)
+                if (projectile.customProps.specialEffect === 'explode_on_impact') {
+                    const explosionCenter = projectile.position; // Use projectile's current position
+                    const explosionRadius = projectile.customProps.explosionRadius || projectileData.explosionRadius || 0;
+                    const baseAoEDamage = projectile.customProps.explosionDamage || projectileData.explosionDamage || 0;
+
+                    if (explosionRadius > 0 && baseAoEDamage > 0) {
+                        createAreaExplosionEffect(explosionCenter, explosionRadius); // Visual effect
+
+                        const allPotentialTargets = gameState.playerRobot.concat(gameState.enemyRobot);
+                        allPotentialTargets.forEach(p => {
+                            // Don't hit the projectile itself, invalid parts, or re-apply direct AoE to the primary target
+                            // (primary target already took direct damage, AoE is for others)
+                            if (p === projectile || !p.customProps || p === target) return;
+
+                            const distance = Matter.Vector.magnitude(Matter.Vector.sub(p.position, explosionCenter));
+
+                            if (distance < explosionRadius) {
+                                let aoeDamage = baseAoEDamage * (1 - (distance / explosionRadius));
+                                applyDamage(p, aoeDamage, 0); // AoE damage usually doesn't get projectile's DR mods
+
+                                const forceMagnitude = (0.005 * p.mass) * (1 - (distance / explosionRadius));
+                                const forceAngle = Math.atan2(p.position.y - explosionCenter.y, p.position.x - explosionCenter.x);
+                                Body.applyForce(p, p.position, {
+                                    x: Math.cos(forceAngle) * forceMagnitude,
+                                    y: Math.sin(forceAngle) * forceMagnitude
+                                });
+                            }
+                        });
+                    }
+                }
                 
-                // Explosion effect
-                createExplosion(projectile.position.x, projectile.position.y);
-                playSound('explosion');
+                // Standard small visual explosion for non-AoE or if AoE visual is separate
+                if (projectile.customProps.specialEffect !== 'explode_on_impact') {
+                    createExplosion(projectile.position.x, projectile.position.y);
+                }
+                playSound('explosion'); // Play sound for any projectile hit that does something
+
+                World.remove(gameState.engine.world, projectile);
             }
         }
 
-        function applyDamage(body, damage) {
-            if (!body.customProps) return;
+        function applyDamage(body, damageAmount, ignoreDRFraction = 0) {
+            if (!body.customProps || damageAmount <= 0) return;
             
-            body.customProps.health -= damage;
+            let dr = body.customProps.damageResistance || 0;
+            dr = Math.max(0, Math.min(1, dr)); // Clamp DR 0-1
+
+            let effectiveDR = dr * (1 - ignoreDRFraction);
+            let finalDamage = damageAmount * (1 - effectiveDR);
+            finalDamage = Math.max(0, finalDamage); // Ensure damage is not negative
+
+            body.customProps.health -= finalDamage;
+            body.customProps.health = Math.max(0, body.customProps.health); // Prevent negative health
             
             if (body.customProps.health <= 0) {
                 destroyPart(body);
@@ -2361,6 +2905,34 @@
             }, 600);
         }
 
+        function createAreaExplosionEffect(position, radius) {
+            const explosionVisual = document.createElement('div');
+            explosionVisual.style.position = 'absolute';
+            explosionVisual.style.left = (position.x - radius) + 'px';
+            explosionVisual.style.top = (position.y - radius) + 'px';
+            explosionVisual.style.width = (radius * 2) + 'px';
+            explosionVisual.style.height = (radius * 2) + 'px';
+            explosionVisual.style.borderRadius = '50%';
+            explosionVisual.style.background = 'radial-gradient(circle, rgba(255,153,0,0.8) 0%, rgba(255,102,0,0.5) 40%, rgba(255,51,0,0) 70%)';
+            explosionVisual.style.pointerEvents = 'none';
+            explosionVisual.style.zIndex = '25'; // Ensure visibility
+            explosionVisual.style.transform = 'scale(0.1)'; // Start small
+            explosionVisual.style.opacity = '1';
+
+            document.getElementById('connectionPoints').appendChild(explosionVisual); // Or other suitable container
+
+            requestAnimationFrame(() => {
+                explosionVisual.style.transition = 'transform 0.3s cubic-bezier(0.1, 0.7, 0.3, 1), opacity 0.3s ease-out';
+                explosionVisual.style.transform = 'scale(1)';
+                explosionVisual.style.opacity = '0';
+            });
+
+            setTimeout(() => {
+                if (explosionVisual.parentElement) explosionVisual.remove();
+            }, 300);
+            // playSound('explosion'); // Assuming an explosion sound is desired, this could be a larger boom
+        }
+
         // Input Handling
         function handleKeyDown(e) {
             if (gameState.mode !== 'battle') return;
@@ -2378,6 +2950,10 @@
                     gameState.keys.space = true;
                     e.preventDefault();
                     break;
+                case 'shift':
+                    gameState.keys.shift = true;
+                    e.preventDefault();
+                    break;
             }
         }
 
@@ -2391,6 +2967,10 @@
                     break;
                 case ' ':
                     gameState.keys.space = false;
+                    break;
+                case 'shift':
+                    gameState.keys.shift = false;
+                    e.preventDefault();
                     break;
             }
         }
@@ -2412,8 +2992,9 @@
                     id: index,
                     type: part.customProps.partType,
                     position: { x: part.position.x, y: part.position.y },
-                    angle: part.angle,
-                    health: part.customProps.maxHealth
+                    angle: part.customProps.angle || 0,
+                    scale: part.customProps.scale || gameState.components[part.customProps.partType]?.defaultScale || 1.0,
+                    health: part.customProps.maxHealth // Save maxHealth, current health resets on load effectively
                 });
             });
             
@@ -2495,10 +3076,52 @@
 
         function createPartFromData(component, data) {
             let body;
+            const scale = data.scale || component.defaultScale || 1.0;
+            let actualWidth = component.width;
+            let actualHeight = component.height;
+            let actualMass = component.mass;
+
+            let finalConnectionPoints = [];
+            if (component.connectionPoints && component.connectionPoints.length > 0) {
+                finalConnectionPoints = component.connectionPoints.map(p => ({ ...p, type: p.type || 'structural' }));
+            }
+
+            if (component.scalable) {
+                if (component.scaleDimension === 'width' || component.scaleDimension === 'both') {
+                    actualWidth *= scale;
+                }
+                if (component.scaleDimension === 'height' || component.scaleDimension === 'both') {
+                    actualHeight *= scale;
+                }
+                actualMass *= scale;
+
+                if (component.connectionPoints && component.connectionPoints.length > 0) {
+                    finalConnectionPoints = finalConnectionPoints.map(p => {
+                        let spx = p.x, spy = p.y;
+                        if (component.scaleDimension === 'width' || component.scaleDimension === 'both') spx *= scale;
+                        // if (component.scaleDimension === 'height' || component.scaleDimension === 'both') spy *= scale;
+                        return { x: spx, y: spy, type: p.type };
+                    });
+                }
+            }
             
-            if (component.radius) {
-                body = Bodies.circle(data.position.x, data.position.y, component.radius, {
-                    mass: component.mass,
+            if (component.vertices) {
+                body = Bodies.fromVertices(data.position.x, data.position.y, component.vertices, {
+                    mass: actualMass,
+                    friction: component.friction || 0.3,
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            } else if (component.radius) {
+                let actualRadius = component.radius;
+                if (component.scalable && (component.scaleDimension === 'radius' || component.scaleDimension === 'both')) {
+                     actualRadius *= scale;
+                }
+                body = Bodies.circle(data.position.x, data.position.y, actualRadius, {
+                    mass: actualMass,
                     friction: component.friction || 0.3,
                     render: {
                         fillStyle: component.color,
@@ -2507,8 +3130,9 @@
                     }
                 });
             } else {
-                body = Bodies.rectangle(data.position.x, data.position.y, component.width, component.height, {
-                    mass: component.mass,
+                body = Bodies.rectangle(data.position.x, data.position.y, actualWidth, actualHeight, {
+                    mass: actualMass,
+                    friction: component.friction || 0.3,
                     render: {
                         fillStyle: component.color,
                         strokeStyle: '#ffffff',
@@ -2517,15 +3141,44 @@
                 });
             }
             
-            Body.setAngle(body, data.angle);
+            Body.setAngle(body, data.angle || 0);
             
             body.customProps = {
-                ...component,
-                health: component.health,
+                label: component.label,
+                partType: data.type,
+                health: data.health || component.health,
                 maxHealth: component.health,
+                mass: actualMass,
+                damageResistance: component.damageResistance || 0,
+                damage: component.damage || 0,
+                weaponType: component.weaponType,
+                fireRate: component.fireRate,
+                projectileSpeed: component.projectileSpeed,
+                ammo: data.ammo !== undefined ? data.ammo : (component.ammo !== undefined ? component.ammo : -1),
+                spinSpeed: component.spinSpeed,
+                torque: component.torque,
+                friction: component.friction || 0.3,
+                angle: data.angle || 0,
+                scale: scale,
+                connectionPoints: finalConnectionPoints,
                 lastFired: 0,
-                ammo: component.ammo || -1,
-                partType: data.type
+                // Weapon specific projectile properties from component definition (data might override if saved)
+                maxAmmo: component.maxAmmo,
+                currentProjectileType: data.currentProjectileType || component.currentProjectileType,
+                availableProjectileTypes: component.availableProjectileTypes ? [...component.availableProjectileTypes] : [],
+                // Melee weapon properties
+                baseDamage: component.baseDamage,
+                attackDuration: component.attackDuration,
+                attackArc: component.attackArc,
+                impactVelocityThreshold: component.impactVelocityThreshold,
+                baseDamagePerSecond: component.baseDamagePerSecond,
+                targetAngularVelocity: component.targetAngularVelocity,
+                spinUpAcceleration: component.spinUpAcceleration,
+                // Initial states for melee weapons (on load, these should generally be reset or explicitly loaded if saved)
+                isSwinging: component.weaponType === 'melee_impact' ? false : undefined,
+                swingProgressTime: component.weaponType === 'melee_impact' ? 0 : undefined,
+                initialAngleCaptured: component.weaponType === 'melee_impact' ? false : undefined,
+                isSpinningActive: component.weaponType === 'continuous_melee' ? false : undefined
             };
             
             body.collisionFilter.group = -1;
