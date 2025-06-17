@@ -1,0 +1,2628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Battle - Workshop</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f0f23;
+            --bg-secondary: #1a1a3a;
+            --bg-tertiary: #252547;
+            --accent-blue: #00d4ff;
+            --accent-green: #00ff88;
+            --accent-orange: #ff6b35;
+            --text-primary: #ffffff;
+            --text-secondary: #b8b8d4;
+            --border-color: #3a3a5c;
+            --panel-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* Main Layout */
+        .workshop-container {
+            display: grid;
+            grid-template-columns: 300px 1fr 250px;
+            grid-template-rows: 60px 1fr 80px;
+            grid-template-areas: 
+                "header header header"
+                "parts-panel build-area properties-panel"
+                "controls controls controls";
+            height: 100vh;
+            gap: 1px;
+            background-color: var(--border-color);
+        }
+
+        /* Header */
+        .workshop-header {
+            grid-area: header;
+            background: var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            box-shadow: var(--panel-shadow);
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(45deg, var(--accent-blue), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .mode-indicator {
+            background: var(--bg-primary);
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 2px solid var(--accent-blue);
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        /* Parts Panel */
+        .parts-panel {
+            grid-area: parts-panel;
+            background: var(--bg-secondary);
+            overflow-y: auto;
+            box-shadow: var(--panel-shadow);
+        }
+
+        .panel-header {
+            background: var(--bg-tertiary);
+            padding: 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 16px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .parts-category {
+            margin-bottom: 24px;
+        }
+
+        .category-title {
+            background: var(--bg-primary);
+            color: var(--accent-blue);
+            padding: 12px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            border-bottom: 2px solid var(--accent-blue);
+        }
+
+        .parts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            padding: 12px;
+        }
+
+        .part-card {
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            border-radius: 6px;
+            padding: 8px;
+            cursor: grab;
+            transition: all 0.2s ease;
+            text-align: center;
+            position: relative;
+            min-height: 70px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .part-card:hover {
+            border-color: var(--accent-blue);
+            background: var(--bg-tertiary);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.2);
+        }
+
+        .part-card:active {
+            cursor: grabbing;
+            transform: scale(0.98);
+        }
+
+        .part-icon {
+            width: 32px;
+            height: 32px;
+            margin: 0 auto 6px;
+            background: var(--accent-blue);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .part-name {
+            font-size: 10px;
+            font-weight: 600;
+            margin-bottom: 2px;
+            line-height: 1.1;
+        }
+
+        .part-stats {
+            font-size: 8px;
+            color: var(--text-secondary);
+            line-height: 1.2;
+        }
+
+        .part-cost {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: var(--accent-orange);
+            color: white;
+            font-size: 8px;
+            font-weight: 700;
+            padding: 1px 4px;
+            border-radius: 8px;
+        }
+
+        /* Build Area - The Main Canvas */
+        .build-area {
+            grid-area: build-area;
+            background: var(--bg-primary);
+            position: relative;
+            overflow: hidden;
+            border: 3px solid var(--accent-blue);
+            background-image: 
+                linear-gradient(var(--border-color) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border-color) 1px, transparent 1px);
+            background-size: 25px 25px;
+            background-position: 0 0, 0 0;
+        }
+
+        .build-area::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at center, transparent 0%, rgba(15, 15, 35, 0.3) 100%);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .canvas-title {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-secondary);
+            color: var(--accent-blue);
+            padding: 8px 20px;
+            border-radius: 20px;
+            border: 2px solid var(--accent-blue);
+            font-size: 16px;
+            font-weight: 600;
+            z-index: 10;
+            box-shadow: var(--panel-shadow);
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: relative;
+            z-index: 2;
+        }
+
+        /* Properties Panel */
+        .properties-panel {
+            grid-area: properties-panel;
+            background: var(--bg-secondary);
+            overflow-y: auto;
+            box-shadow: var(--panel-shadow);
+        }
+
+        .property-section {
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .property-header {
+            background: var(--bg-tertiary);
+            padding: 12px 16px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--accent-green);
+            cursor: pointer;
+            border-bottom: 2px solid var(--accent-green);
+        }
+
+        .property-content {
+            padding: 16px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+        }
+
+        .stat-value {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .validation-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 11px;
+            padding: 6px;
+            border-radius: 4px;
+        }
+
+        .validation-item.valid {
+            background: rgba(0, 255, 136, 0.1);
+            color: var(--accent-green);
+        }
+
+        .validation-item.invalid {
+            background: rgba(255, 107, 53, 0.1);
+            color: var(--accent-orange);
+        }
+
+        .validation-icon {
+            width: 12px;
+            height: 12px;
+        }
+
+        /* Controls */
+        .workshop-controls {
+            grid-area: controls;
+            background: var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            box-shadow: var(--panel-shadow);
+        }
+
+        .control-group {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            border-color: var(--accent-blue);
+            background: var(--bg-secondary);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, var(--accent-blue), var(--accent-green));
+            border-color: transparent;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 212, 255, 0.3);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-danger {
+            border-color: var(--accent-orange);
+            color: var(--accent-orange);
+        }
+
+        .btn-danger:hover {
+            background: var(--accent-orange);
+            color: white;
+        }
+
+        /* Drag Preview */
+        .drag-preview {
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0.8;
+            transition: none;
+        }
+
+        .drag-preview .part-icon {
+            background: var(--accent-green);
+            box-shadow: 0 8px 25px rgba(0, 255, 136, 0.4);
+        }
+
+        /* Welding System */
+        .welding-mode .build-area {
+            border-color: var(--accent-orange);
+            box-shadow: 0 0 20px rgba(255, 107, 53, 0.3);
+        }
+
+        .weld-indicator {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: var(--accent-orange);
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 15;
+            animation: weld-glow 1.5s infinite;
+        }
+
+        @keyframes weld-glow {
+            0%, 100% { 
+                opacity: 0.7; 
+                transform: translate(-50%, -50%) scale(1);
+            }
+            50% { 
+                opacity: 1; 
+                transform: translate(-50%, -50%) scale(1.3);
+                box-shadow: 0 0 10px var(--accent-orange);
+            }
+        }
+
+        .part-selected-for-weld {
+            border: 3px solid var(--accent-orange) !important;
+            background: rgba(255, 107, 53, 0.1) !important;
+            box-shadow: 0 0 15px rgba(255, 107, 53, 0.5) !important;
+        }
+
+        .welding-tools {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+
+        .weld-btn {
+            background: var(--accent-orange);
+            border: none;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .weld-btn:hover {
+            background: #e55a2b;
+            transform: translateY(-1px);
+        }
+
+        .weld-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .weld-mode-indicator {
+            font-size: 10px;
+            color: var(--accent-orange);
+            font-weight: 600;
+        }
+
+        .tool-mode-selector {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            padding: 0 12px;
+        }
+
+        .tool-mode {
+            flex: 1;
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 8px 4px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: center;
+        }
+
+        .tool-mode.active {
+            border-color: var(--accent-blue);
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        /* Connection Points */
+        .connection-point {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: var(--accent-blue);
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+
+        .connection-point.visible {
+            opacity: 1;
+            animation: pulse 2s infinite;
+        }
+
+        .connection-point.snap-target {
+            background: var(--accent-green);
+            transform: translate(-50%, -50%) scale(1.5);
+            box-shadow: 0 0 20px var(--accent-green);
+        }
+
+        .connection-point.visible {
+            opacity: 1;
+            animation: pulse 2s infinite;
+        }
+
+        .connection-point.snap-target {
+            background: var(--accent-green);
+            transform: translate(-50%, -50%) scale(1.5);
+            box-shadow: 0 0 20px var(--accent-green);
+        }
+
+        @keyframes pulse {
+            0%, 100% { 
+                opacity: 0.6; 
+                transform: translate(-50%, -50%) scale(1);
+            }
+            50% { 
+                opacity: 1; 
+                transform: translate(-50%, -50%) scale(1.2);
+            }
+        }
+
+        /* Battle UI */
+        .battle-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 15, 35, 0.9);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+
+        .battle-overlay.active {
+            display: flex;
+        }
+
+        .battle-ui {
+            background: var(--bg-secondary);
+            border: 3px solid var(--accent-blue);
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            box-shadow: var(--panel-shadow);
+        }
+
+        .health-bars {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .health-bar {
+            width: 150px;
+            height: 12px;
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-green) 0%, var(--accent-orange) 100%);
+            transition: width 0.5s ease;
+        }
+
+        .health-label {
+            font-size: 12px;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+        }
+
+        .vs-indicator {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent-blue);
+        }
+
+        .controls-hint {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        /* Game Over */
+        .game-over {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        .game-over.active {
+            display: flex;
+        }
+
+        .game-over-content {
+            background: var(--bg-secondary);
+            border: 3px solid var(--accent-blue);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            box-shadow: var(--panel-shadow);
+        }
+
+        .game-over-title {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            background: linear-gradient(45deg, var(--accent-blue), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .game-over-subtitle {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+            font-size: 16px;
+        }
+
+        /* Explosion Effect */
+        .explosion {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            background: radial-gradient(circle, var(--accent-orange) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 20;
+            animation: explode 0.6s ease-out forwards;
+        }
+
+        @keyframes explode {
+            0% { 
+                transform: scale(0) rotate(0deg); 
+                opacity: 1; 
+            }
+            100% { 
+                transform: scale(4) rotate(180deg); 
+                opacity: 0; 
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .workshop-container {
+                grid-template-columns: 250px 1fr 200px;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .workshop-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: 60px 200px 1fr 80px;
+                grid-template-areas: 
+                    "header"
+                    "parts-panel"
+                    "build-area"
+                    "controls";
+            }
+            
+            .properties-panel {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="workshop-container">
+        <!-- Header -->
+        <div class="workshop-header">
+            <div class="logo">ROBOT BATTLE</div>
+            <div class="mode-indicator" id="modeIndicator">ASSEMBLY MODE</div>
+        </div>
+
+        <!-- Parts Panel -->
+        <div class="parts-panel">
+            <div class="panel-header">PARTS INVENTORY</div>
+            
+            <!-- Tool Mode Selector -->
+            <div class="tool-mode-selector">
+                <div class="tool-mode active" data-mode="build">BUILD</div>
+                <div class="tool-mode weld-mode" data-mode="weld">WELD</div>
+                <div class="tool-mode" data-mode="edit">EDIT</div>
+            </div>
+
+            <!-- Welding Tools (shown only in weld mode) -->
+            <div class="welding-tools" id="weldingTools" style="display: none;">
+                <button class="weld-btn" id="startWeldBtn" disabled>Select 2 Parts to Weld</button>
+                <button class="weld-btn" id="clearWeldBtn">Clear Selection</button>
+                <div class="weld-mode-indicator" id="weldStatus">Welding Mode Active</div>
+            </div>
+            
+            <!-- Core Components -->
+            <div class="parts-category">
+                <div class="category-title">CORE COMPONENTS</div>
+                <div class="parts-grid">
+                    <div class="part-card" data-part="chassis">
+                        <div class="part-cost">100</div>
+                        <div class="part-icon">🏗️</div>
+                        <div class="part-name">Chassis</div>
+                        <div class="part-stats">HP: 300<br>Mass: 12kg</div>
+                    </div>
+                    <div class="part-card" data-part="lightChassis">
+                        <div class="part-cost">75</div>
+                        <div class="part-icon">⚡</div>
+                        <div class="part-name">Light Chassis</div>
+                        <div class="part-stats">HP: 200<br>Mass: 8kg</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Weapons -->
+            <div class="parts-category">
+                <div class="category-title">WEAPONS</div>
+                <div class="parts-grid">
+                    <div class="part-card" data-part="spike">
+                        <div class="part-cost">30</div>
+                        <div class="part-icon">📐</div>
+                        <div class="part-name">Spike</div>
+                        <div class="part-stats">DMG: 25<br>HP: 60</div>
+                    </div>
+                    <div class="part-card" data-part="hammer">
+                        <div class="part-cost">60</div>
+                        <div class="part-icon">🔨</div>
+                        <div class="part-name">Hammer</div>
+                        <div class="part-stats">DMG: 50<br>Cooldown: 2s</div>
+                    </div>
+                    <div class="part-card" data-part="saw">
+                        <div class="part-cost">45</div>
+                        <div class="part-icon">⚙️</div>
+                        <div class="part-name">Saw</div>
+                        <div class="part-stats">DMG: 15<br>Continuous</div>
+                    </div>
+                    <div class="part-card" data-part="cannon">
+                        <div class="part-cost">80</div>
+                        <div class="part-icon">🎯</div>
+                        <div class="part-name">Cannon</div>
+                        <div class="part-stats">DMG: 40<br>Range: High</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobility -->
+            <div class="parts-category">
+                <div class="category-title">MOBILITY</div>
+                <div class="parts-grid">
+                    <div class="part-card" data-part="wheel">
+                        <div class="part-cost">25</div>
+                        <div class="part-icon">⭕</div>
+                        <div class="part-name">Wheel</div>
+                        <div class="part-stats">HP: 90<br>Torque: Standard</div>
+                    </div>
+                    <div class="part-card" data-part="heavyWheel">
+                        <div class="part-cost">40</div>
+                        <div class="part-icon">🔘</div>
+                        <div class="part-name">Heavy Wheel</div>
+                        <div class="part-stats">HP: 150<br>Torque: High</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Build Area -->
+        <div class="build-area">
+            <div class="canvas-title" id="canvasTitle">ROBOT ASSEMBLY WORKSHOP</div>
+            <canvas id="gameCanvas"></canvas>
+            <div id="connectionPoints"></div>
+            
+            <!-- Battle Overlay -->
+            <div class="battle-overlay" id="battleOverlay">
+                <div class="battle-ui">
+                    <div class="health-bars">
+                        <div>
+                            <div class="health-label">PLAYER</div>
+                            <div class="health-bar">
+                                <div class="health-fill" id="playerHealth"></div>
+                            </div>
+                        </div>
+                        <div class="vs-indicator">VS</div>
+                        <div>
+                            <div class="health-label">ENEMY</div>
+                            <div class="health-bar">
+                                <div class="health-fill" id="enemyHealth"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="controls-hint">A/D to move • SPACE to fire weapons</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Properties Panel -->
+        <div class="properties-panel">
+            <div class="panel-header">ROBOT STATUS</div>
+            
+            <div class="property-section">
+                <div class="property-header">STATISTICS</div>
+                <div class="property-content" id="robotStats">
+                    <div class="stat-row">
+                        <span class="stat-label">Total Health:</span>
+                        <span class="stat-value" id="totalHealth">0 HP</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Total Mass:</span>
+                        <span class="stat-value" id="totalMass">0 kg</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Weapons:</span>
+                        <span class="stat-value" id="weaponCount">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Mobility:</span>
+                        <span class="stat-value" id="mobilityCount">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="property-section">
+                <div class="property-header">REAL-TIME ANALYSIS</div>
+                <div class="property-content">
+                    <!-- Center of Mass Indicator -->
+                    <div class="analysis-item">
+                        <div class="analysis-label">Center of Mass</div>
+                        <div class="com-indicator" id="comIndicator">
+                            <div class="com-dot" id="comDot"></div>
+                            <span class="com-coords" id="comCoords">X: 0, Y: 0</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Weight Distribution -->
+                    <div class="analysis-item">
+                        <div class="analysis-label">Weight Distribution</div>
+                        <div class="weight-bars">
+                            <div class="weight-bar">
+                                <span class="bar-label">Front</span>
+                                <div class="bar-fill" id="frontWeight"></div>
+                                <span class="bar-value" id="frontValue">0%</span>
+                            </div>
+                            <div class="weight-bar">
+                                <span class="bar-label">Rear</span>
+                                <div class="bar-fill" id="rearWeight"></div>
+                                <span class="bar-value" id="rearValue">0%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Structural Integrity -->
+                    <div class="analysis-item">
+                        <div class="analysis-label">Structural Integrity</div>
+                        <div class="integrity-meter">
+                            <div class="integrity-fill" id="integrityFill"></div>
+                            <span class="integrity-text" id="integrityText">Excellent</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Performance Predictions -->
+                    <div class="analysis-item">
+                        <div class="analysis-label">Performance Rating</div>
+                        <div class="performance-grid">
+                            <div class="perf-metric">
+                                <span class="metric-name">Speed</span>
+                                <div class="metric-stars" id="speedRating">★★★☆☆</div>
+                            </div>
+                            <div class="perf-metric">
+                                <span class="metric-name">Power</span>
+                                <div class="metric-stars" id="powerRating">★★☆☆☆</div>
+                            </div>
+                            <div class="perf-metric">
+                                <span class="metric-name">Defense</span>
+                                <div class="metric-stars" id="defenseRating">★☆☆☆☆</div>
+                            </div>
+                            <div class="perf-metric">
+                                <span class="metric-name">Balance</span>
+                                <div class="metric-stars" id="balanceRating">★★★★☆</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="property-section">
+                <div class="property-header">VALIDATION</div>
+                <div class="property-content" id="validationResults">
+                    <!-- Populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="workshop-controls">
+            <div class="control-group">
+                <button class="btn" id="clearBtn">Clear All</button>
+                <button class="btn" id="saveBtn">Save Design</button>
+                <button class="btn" id="loadBtn">Load Design</button>
+            </div>
+            
+            <div class="control-group">
+                <button class="btn btn-primary" id="battleBtn" disabled>START BATTLE</button>
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div class="game-over" id="gameOver">
+            <div class="game-over-content">
+                <div class="game-over-title" id="gameOverTitle">VICTORY!</div>
+                <div class="game-over-subtitle" id="gameOverSubtitle">Your robot dominated the battlefield!</div>
+                <button class="btn btn-primary" id="backToWorkshop">BACK TO WORKSHOP</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden textarea for save/load -->
+    <textarea id="saveData" style="position: absolute; left: -9999px; opacity: 0;"></textarea>
+
+    <script>
+        // Game state and components
+        const { Engine, Render, World, Bodies, Body, Events, Constraint, Runner } = Matter;
+        
+        const gameState = {
+            engine: null,
+            runner: null,
+            render: null,
+            canvas: null,
+            mode: 'assembly',
+            toolMode: 'build', // 'build', 'weld', 'edit'
+            
+            // Robot tracking
+            playerRobot: [],
+            enemyRobot: [],
+            playerChassis: null,
+            enemyChassis: null,
+            
+            // Welding system
+            weldingMode: false,
+            selectedForWeld: [],
+            weldedConnections: [],
+            
+            // Input
+            keys: {
+                a: false,
+                d: false,
+                space: false
+            },
+            
+            // Drag state
+            isDragging: false,
+            dragPart: null,
+            dragPreview: null,
+            snapTarget: null,
+            
+            // Audio
+            audioContext: null,
+            
+            // Component definitions
+            components: {
+                chassis: {
+                    label: 'chassis',
+                    health: 300,
+                    mass: 12,
+                    width: 80,
+                    height: 50,
+                    color: '#4a90e2',
+                    connectionPoints: [
+                        { x: -40, y: 0 }, { x: 40, y: 0 },
+                        { x: 0, y: -25 }, { x: 0, y: 25 },
+                        { x: -25, y: 25 }, { x: 25, y: 25 }
+                    ]
+                },
+                lightChassis: {
+                    label: 'chassis',
+                    health: 200,
+                    mass: 8,
+                    width: 60,
+                    height: 40,
+                    color: '#3498db',
+                    connectionPoints: [
+                        { x: -30, y: 0 }, { x: 30, y: 0 },
+                        { x: 0, y: -20 }, { x: 0, y: 20 }
+                    ]
+                },
+                spike: {
+                    label: 'spike',
+                    health: 60,
+                    mass: 4,
+                    width: 40,
+                    height: 20,
+                    damage: 25,
+                    color: '#e74c3c',
+                    connectionPoints: [{ x: -20, y: 0 }]
+                },
+                hammer: {
+                    label: 'hammer',
+                    health: 100,
+                    mass: 8,
+                    width: 35,
+                    height: 50,
+                    damage: 50,
+                    weaponType: 'melee',
+                    fireRate: 2000,
+                    color: '#8e44ad',
+                    connectionPoints: [{ x: 0, y: 25 }]
+                },
+                saw: {
+                    label: 'saw',
+                    health: 80,
+                    mass: 6,
+                    radius: 20,
+                    damage: 15,
+                    weaponType: 'continuous',
+                    spinSpeed: 8,
+                    color: '#f39c12',
+                    connectionPoints: [{ x: 0, y: 0 }]
+                },
+                cannon: {
+                    label: 'cannon',
+                    health: 70,
+                    mass: 5,
+                    width: 50,
+                    height: 20,
+                    damage: 40,
+                    weaponType: 'projectile',
+                    fireRate: 1500,
+                    projectileSpeed: 15,
+                    ammo: 10,
+                    color: '#16a085',
+                    connectionPoints: [{ x: -25, y: 0 }]
+                },
+                wheel: {
+                    label: 'wheel',
+                    health: 90,
+                    mass: 6,
+                    radius: 20,
+                    torque: 0.02,
+                    color: '#34495e',
+                    friction: 0.9,
+                    connectionPoints: []
+                },
+                heavyWheel: {
+                    label: 'wheel',
+                    health: 150,
+                    mass: 10,
+                    radius: 25,
+                    torque: 0.025,
+                    color: '#2c3e50',
+                    friction: 1.2,
+                    connectionPoints: []
+                }
+            }
+        };
+
+        // Initialize the game
+        function init() {
+            setupPhysics();
+            setupUI();
+            setupAudio();
+            createArena();
+            updateUI();
+            
+            console.log('Robot Battle Workshop initialized');
+        }
+
+        function setupPhysics() {
+            const canvas = document.getElementById('gameCanvas');
+            gameState.canvas = canvas;
+            
+            // Create engine
+            gameState.engine = Engine.create();
+            gameState.engine.world.gravity.y = 1;
+            
+            // Create renderer
+            gameState.render = Render.create({
+                canvas: canvas,
+                engine: gameState.engine,
+                options: {
+                    width: canvas.parentElement.clientWidth,
+                    height: canvas.parentElement.clientHeight,
+                    wireframes: false,
+                    background: 'transparent',
+                    showAngleIndicator: false,
+                    showVelocity: false
+                }
+            });
+            
+            // Handle canvas resizing
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Start physics
+            gameState.runner = Runner.create();
+            Runner.run(gameState.runner, gameState.engine);
+            Render.run(gameState.render);
+            
+            // Game loop
+            Events.on(gameState.engine, 'beforeUpdate', gameLoop);
+            Events.on(gameState.engine, 'collisionStart', handleCollisions);
+        }
+
+        function resizeCanvas() {
+            const container = gameState.canvas.parentElement;
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            
+            gameState.canvas.width = width;
+            gameState.canvas.height = height;
+            gameState.render.canvas.width = width;
+            gameState.render.canvas.height = height;
+            gameState.render.options.width = width;
+            gameState.render.options.height = height;
+        }
+
+        function setupUI() {
+            // Tool mode selectors
+            document.querySelectorAll('.tool-mode').forEach(mode => {
+                mode.addEventListener('click', (e) => {
+                    switchToolMode(e.target.dataset.mode);
+                });
+            });
+
+            // Welding controls
+            document.getElementById('startWeldBtn').addEventListener('click', executeWeld);
+            document.getElementById('clearWeldBtn').addEventListener('click', clearWeldSelection);
+            
+            // Part card drag events
+            document.querySelectorAll('.part-card').forEach(card => {
+                card.addEventListener('mousedown', startDrag);
+                card.addEventListener('touchstart', startDrag, { passive: false });
+            });
+            
+            // Canvas click for welding mode
+            gameState.canvas.addEventListener('click', handleCanvasClick);
+            
+            // Global drag events
+            document.addEventListener('mousemove', handleDrag);
+            document.addEventListener('mouseup', endDrag);
+            document.addEventListener('touchmove', handleDrag, { passive: false });
+            document.addEventListener('touchend', endDrag);
+            
+            // Keyboard events
+            document.addEventListener('keydown', handleKeyDown);
+            document.addEventListener('keyup', handleKeyUp);
+            
+            // Button events
+            document.getElementById('clearBtn').addEventListener('click', clearRobot);
+            document.getElementById('saveBtn').addEventListener('click', saveRobot);
+            document.getElementById('loadBtn').addEventListener('click', loadRobot);
+            document.getElementById('battleBtn').addEventListener('click', startBattle);
+            document.getElementById('backToWorkshop').addEventListener('click', backToWorkshop);
+        }
+
+        function setupAudio() {
+            try {
+                gameState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                console.warn('Audio not supported');
+            }
+        }
+
+        // Tool Mode System
+        function switchToolMode(mode) {
+            gameState.toolMode = mode;
+            
+            // Update UI
+            document.querySelectorAll('.tool-mode').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+            
+            // Show/hide welding tools
+            const weldingTools = document.getElementById('weldingTools');
+            weldingTools.style.display = mode === 'weld' ? 'flex' : 'none';
+            
+            // Update body class for styling
+            document.body.classList.toggle('welding-mode', mode === 'weld');
+            
+            // Clear any selections when switching modes
+            clearWeldSelection();
+            
+            playSound('click');
+        }
+
+        // Welding System
+        function handleCanvasClick(e) {
+            if (gameState.toolMode !== 'weld' || gameState.mode !== 'assembly') return;
+            
+            const rect = gameState.canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Find clicked part
+            const clickedPart = getPartAtPosition(x, y);
+            if (!clickedPart) return;
+            
+            selectPartForWeld(clickedPart);
+        }
+
+        function getPartAtPosition(x, y) {
+            for (let part of gameState.playerRobot) {
+                const bounds = part.bounds;
+                if (x >= bounds.min.x && x <= bounds.max.x && 
+                    y >= bounds.min.y && y <= bounds.max.y) {
+                    return part;
+                }
+            }
+            return null;
+        }
+
+        function selectPartForWeld(part) {
+            // Check if already selected
+            const index = gameState.selectedForWeld.indexOf(part);
+            
+            if (index !== -1) {
+                // Deselect
+                gameState.selectedForWeld.splice(index, 1);
+                part.render.strokeStyle = '#ffffff';
+                part.render.lineWidth = 2;
+            } else {
+                // Select (max 2 parts)
+                if (gameState.selectedForWeld.length >= 2) {
+                    // Deselect first part
+                    const firstPart = gameState.selectedForWeld.shift();
+                    firstPart.render.strokeStyle = '#ffffff';
+                    firstPart.render.lineWidth = 2;
+                }
+                
+                gameState.selectedForWeld.push(part);
+                part.render.strokeStyle = '#ff6b35';
+                part.render.lineWidth = 4;
+            }
+            
+            updateWeldUI();
+            playSound('click');
+        }
+
+        function updateWeldUI() {
+            const weldBtn = document.getElementById('startWeldBtn');
+            const selectedCount = gameState.selectedForWeld.length;
+            
+            if (selectedCount === 0) {
+                weldBtn.textContent = 'Select 2 Parts to Weld';
+                weldBtn.disabled = true;
+            } else if (selectedCount === 1) {
+                weldBtn.textContent = 'Select 1 More Part';
+                weldBtn.disabled = true;
+            } else if (selectedCount === 2) {
+                weldBtn.textContent = 'WELD PARTS TOGETHER';
+                weldBtn.disabled = false;
+            }
+        }
+
+        function executeWeld() {
+            if (gameState.selectedForWeld.length !== 2) return;
+            
+            const [partA, partB] = gameState.selectedForWeld;
+            
+            // Check if parts are already connected
+            const existingConnection = gameState.engine.world.constraints.find(constraint => 
+                (constraint.bodyA === partA && constraint.bodyB === partB) ||
+                (constraint.bodyA === partB && constraint.bodyB === partA)
+            );
+            
+            if (existingConnection) {
+                // Upgrade to welded connection
+                existingConnection.isWelded = true;
+                existingConnection.render.strokeStyle = '#ff6b35';
+                existingConnection.render.lineWidth = 4;
+            } else {
+                // Calculate distance between parts
+                const dx = partA.position.x - partB.position.x;
+                const dy = partA.position.y - partB.position.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // Create new welded connection
+                const constraint = Constraint.create({
+                    bodyA: partA,
+                    bodyB: partB,
+                    pointA: { x: 0, y: 0 },
+                    pointB: { x: 0, y: 0 },
+                    length: distance,
+                    stiffness: 1,
+                    isWelded: true,
+                    render: {
+                        visible: true,
+                        strokeStyle: '#ff6b35',
+                        lineWidth: 4,
+                        type: 'line'
+                    }
+                });
+                
+                World.add(gameState.engine.world, constraint);
+            }
+            
+            // Track welded connection
+            gameState.weldedConnections.push({
+                partA: partA,
+                partB: partB,
+                weldTime: Date.now()
+            });
+            
+            // Clear selection
+            clearWeldSelection();
+            
+            // Visual effect
+            createWeldEffect(partA.position, partB.position);
+            
+            // Update analysis
+            updateUI();
+            
+            playSound('weld');
+        }
+
+        function clearWeldSelection() {
+            gameState.selectedForWeld.forEach(part => {
+                part.render.strokeStyle = '#ffffff';
+                part.render.lineWidth = 2;
+            });
+            
+            gameState.selectedForWeld = [];
+            updateWeldUI();
+        }
+
+        function createWeldEffect(posA, posB) {
+            const midX = (posA.x + posB.x) / 2;
+            const midY = (posA.y + posB.y) / 2;
+            
+            // Create welding spark effect
+            for (let i = 0; i < 8; i++) {
+                setTimeout(() => {
+                    const spark = document.createElement('div');
+                    spark.className = 'weld-indicator';
+                    spark.style.left = (midX + (Math.random() - 0.5) * 20) + 'px';
+                    spark.style.top = (midY + (Math.random() - 0.5) * 20) + 'px';
+                    
+                    document.getElementById('connectionPoints').appendChild(spark);
+                    
+                    setTimeout(() => {
+                        spark.remove();
+                    }, 1000);
+                }, i * 100);
+            }
+        }
+
+        function createArena() {
+            const width = gameState.render.options.width;
+            const height = gameState.render.options.height;
+            const wallThickness = 20;
+            
+            const walls = [
+                Bodies.rectangle(width / 2, -wallThickness / 2, width, wallThickness, { isStatic: true }),
+                Bodies.rectangle(width / 2, height + wallThickness / 2, width, wallThickness, { isStatic: true }),
+                Bodies.rectangle(-wallThickness / 2, height / 2, wallThickness, height, { isStatic: true }),
+                Bodies.rectangle(width + wallThickness / 2, height / 2, wallThickness, height, { isStatic: true })
+            ];
+            
+            walls.forEach(wall => {
+                wall.render.fillStyle = '#3a3a5c';
+                wall.friction = 0.9;
+            });
+            
+            World.add(gameState.engine.world, walls);
+        }
+
+        // Drag and Drop System
+        function startDrag(e) {
+            // Only allow dragging in build mode
+            if (gameState.toolMode !== 'build') return;
+            
+            e.preventDefault();
+            const partType = e.currentTarget.dataset.part;
+            const component = gameState.components[partType];
+            
+            if (!component) return;
+            
+            gameState.isDragging = true;
+            gameState.dragPart = partType;
+            
+            // Create visual preview
+            createDragPreview(e);
+            
+            // Resume audio context
+            if (gameState.audioContext && gameState.audioContext.state === 'suspended') {
+                gameState.audioContext.resume();
+            }
+            
+            playSound('click');
+        }
+
+        function createDragPreview(e) {
+            const preview = document.createElement('div');
+            preview.className = 'drag-preview';
+            
+            const icon = document.createElement('div');
+            icon.className = 'part-icon';
+            icon.textContent = e.currentTarget.querySelector('.part-icon').textContent;
+            
+            preview.appendChild(icon);
+            document.body.appendChild(preview);
+            
+            gameState.dragPreview = preview;
+            
+            // Position at cursor
+            const rect = e.currentTarget.getBoundingClientRect();
+            preview.style.left = rect.left + 'px';
+            preview.style.top = rect.top + 'px';
+        }
+
+        function handleDrag(e) {
+            if (!gameState.isDragging || !gameState.dragPreview) return;
+            
+            const x = e.clientX || (e.touches && e.touches[0].clientX);
+            const y = e.clientY || (e.touches && e.touches[0].clientY);
+            
+            gameState.dragPreview.style.left = (x - 30) + 'px';
+            gameState.dragPreview.style.top = (y - 30) + 'px';
+            
+            // Check for snap targets
+            checkSnapTargets(x, y);
+        }
+
+        function checkSnapTargets(x, y) {
+            const canvasRect = gameState.canvas.getBoundingClientRect();
+            const canvasX = x - canvasRect.left;
+            const canvasY = y - canvasRect.top;
+            
+            gameState.snapTarget = null;
+            
+            // Find closest connection point
+            let closestDistance = Infinity;
+            
+            gameState.playerRobot.forEach(part => {
+                if (!part.customProps.connectionPoints) return;
+                
+                part.customProps.connectionPoints.forEach(point => {
+                    const worldX = part.position.x + point.x;
+                    const worldY = part.position.y + point.y;
+                    
+                    const distance = Math.sqrt(
+                        Math.pow(canvasX - worldX, 2) + 
+                        Math.pow(canvasY - worldY, 2)
+                    );
+                    
+                    if (distance < 50 && distance < closestDistance) {
+                        closestDistance = distance;
+                        gameState.snapTarget = {
+                            part: part,
+                            point: { x: worldX, y: worldY },
+                            localPoint: point
+                        };
+                    }
+                });
+            });
+            
+            updateConnectionPointsDisplay();
+        }
+
+        function endDrag(e) {
+            if (!gameState.isDragging) return;
+            
+            const x = e.clientX || (e.changedTouches && e.changedTouches[0].clientX);
+            const y = e.clientY || (e.changedTouches && e.changedTouches[0].clientY);
+            
+            // Check if dropped on canvas
+            const canvasRect = gameState.canvas.getBoundingClientRect();
+            const inCanvas = x >= canvasRect.left && x <= canvasRect.right && 
+                           y >= canvasRect.top && y <= canvasRect.bottom;
+            
+            if (inCanvas) {
+                const canvasX = x - canvasRect.left;
+                const canvasY = y - canvasRect.top;
+                
+                let spawnX = canvasX;
+                let spawnY = canvasY;
+                
+                if (gameState.snapTarget) {
+                    spawnX = gameState.snapTarget.point.x;
+                    spawnY = gameState.snapTarget.point.y;
+                }
+                
+                createPart(gameState.dragPart, spawnX, spawnY);
+            }
+            
+            // Cleanup
+            gameState.isDragging = false;
+            gameState.dragPart = null;
+            gameState.snapTarget = null;
+            
+            if (gameState.dragPreview) {
+                gameState.dragPreview.remove();
+                gameState.dragPreview = null;
+            }
+            
+            updateConnectionPointsDisplay();
+        }
+
+        // Part Creation
+        function createPart(partType, x, y) {
+            const component = gameState.components[partType];
+            if (!component) return;
+            
+            let body;
+            
+            if (component.radius) {
+                // Circular part (wheel, saw)
+                body = Bodies.circle(x, y, component.radius, {
+                    mass: component.mass,
+                    friction: component.friction || 0.3,
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            } else {
+                // Rectangular part
+                body = Bodies.rectangle(x, y, component.width, component.height, {
+                    mass: component.mass,
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            }
+            
+            // Add custom properties
+            body.customProps = {
+                ...component,
+                health: component.health,
+                maxHealth: component.health,
+                lastFired: 0,
+                ammo: component.ammo || -1,
+                partType: partType
+            };
+            
+            // Set collision group
+            body.collisionFilter.group = -1;
+            
+            // Add to world and tracking
+            World.add(gameState.engine.world, body);
+            gameState.playerRobot.push(body);
+            
+            // Track chassis
+            if (component.label === 'chassis') {
+                gameState.playerChassis = body;
+            }
+            
+            // Create constraint if snapped
+            if (gameState.snapTarget) {
+                const constraint = Constraint.create({
+                    bodyA: gameState.snapTarget.part,
+                    bodyB: body,
+                    pointA: gameState.snapTarget.localPoint,
+                    pointB: { x: 0, y: 0 },
+                    length: 0,
+                    stiffness: 1,
+                    render: { visible: false }
+                });
+                
+                World.add(gameState.engine.world, constraint);
+            }
+            
+            updateUI();
+            playSound('click');
+        }
+
+        // UI Updates
+        function updateUI() {
+            updateRobotStats();
+            updateValidation();
+            updateConnectionPointsDisplay();
+            updateRealTimeAnalysis();
+        }
+
+        function updateRealTimeAnalysis() {
+            if (gameState.playerRobot.length === 0) {
+                // Reset all displays when no robot
+                resetAnalysisDisplay();
+                return;
+            }
+
+            const analysis = calculateRobotAnalysis();
+            
+            // Update Center of Mass
+            updateCenterOfMass(analysis.centerOfMass);
+            
+            // Update Weight Distribution
+            updateWeightDistribution(analysis.weightDistribution);
+            
+            // Update Structural Integrity
+            updateStructuralIntegrity(analysis.structuralIntegrity);
+            
+            // Update Performance Ratings
+            updatePerformanceRatings(analysis.performance);
+        }
+
+        function calculateRobotAnalysis() {
+            const robot = gameState.playerRobot;
+            if (robot.length === 0) return null;
+
+            // Calculate Center of Mass
+            let totalMass = 0;
+            let weightedX = 0;
+            let weightedY = 0;
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+
+            robot.forEach(part => {
+                const mass = part.customProps.mass;
+                totalMass += mass;
+                weightedX += part.position.x * mass;
+                weightedY += part.position.y * mass;
+                
+                minX = Math.min(minX, part.position.x);
+                maxX = Math.max(maxX, part.position.x);
+                minY = Math.min(minY, part.position.y);
+                maxY = Math.max(maxY, part.position.y);
+            });
+
+            const centerOfMass = {
+                x: weightedX / totalMass,
+                y: weightedY / totalMass
+            };
+
+            // Calculate Weight Distribution (front vs rear)
+            const robotCenterX = (minX + maxX) / 2;
+            let frontWeight = 0;
+            let rearWeight = 0;
+
+            robot.forEach(part => {
+                if (part.position.x < robotCenterX) {
+                    frontWeight += part.customProps.mass;
+                } else {
+                    rearWeight += part.customProps.mass;
+                }
+            });
+
+            const weightDistribution = {
+                front: (frontWeight / totalMass) * 100,
+                rear: (rearWeight / totalMass) * 100
+            };
+
+            // Calculate Structural Integrity
+            const constraints = gameState.engine.world.constraints.filter(c => 
+                !c.bodyA?.isStatic && c.bodyA && c.bodyB
+            );
+            const weldedCount = gameState.weldedConnections.length;
+            const totalConnections = constraints.length;
+            const integrityScore = totalConnections > 0 ? 
+                Math.min(100, ((weldedCount / totalConnections) * 50) + 50) : 0;
+
+            // Calculate Performance Ratings
+            const wheelCount = robot.filter(p => p.customProps.label === 'wheel').length;
+            const weaponCount = robot.filter(p => p.customProps.damage > 0).length;
+            const armorCount = robot.filter(p => p.customProps.label === 'armor').length;
+            
+            // Balance based on center of mass position relative to robot bounds
+            const balanceScore = calculateBalanceScore(centerOfMass, { minX, maxX, minY, maxY });
+
+            const performance = {
+                speed: Math.min(5, Math.max(1, Math.floor((wheelCount * 1.5) - (totalMass / 20)))),
+                power: Math.min(5, Math.max(1, weaponCount + Math.floor(totalMass / 15))),
+                defense: Math.min(5, Math.max(1, armorCount + Math.floor(robot.length / 3))),
+                balance: Math.min(5, Math.max(1, balanceScore))
+            };
+
+            return {
+                centerOfMass,
+                weightDistribution,
+                structuralIntegrity: integrityScore,
+                performance,
+                bounds: { minX, maxX, minY, maxY }
+            };
+        }
+
+        function calculateBalanceScore(com, bounds) {
+            const robotWidth = bounds.maxX - bounds.minX;
+            const robotHeight = bounds.maxY - bounds.minY;
+            const centerX = (bounds.minX + bounds.maxX) / 2;
+            const centerY = (bounds.minY + bounds.maxY) / 2;
+
+            // Calculate how far COM is from geometric center
+            const offsetX = Math.abs(com.x - centerX) / (robotWidth / 2);
+            const offsetY = Math.abs(com.y - centerY) / (robotHeight / 2);
+            const totalOffset = (offsetX + offsetY) / 2;
+
+            // Convert to 1-5 scale (lower offset = better balance)
+            return Math.max(1, Math.floor(5 - (totalOffset * 4)));
+        }
+
+        function updateCenterOfMass(com) {
+            if (!com) return;
+
+            const comDot = document.getElementById('comDot');
+            const comCoords = document.getElementById('comCoords');
+            const indicator = document.getElementById('comIndicator');
+
+            // Position relative to indicator bounds
+            const rect = indicator.getBoundingClientRect();
+            const canvasRect = gameState.canvas.getBoundingClientRect();
+            
+            // Map canvas coordinates to indicator coordinates
+            const canvasWidth = canvasRect.width;
+            const canvasHeight = canvasRect.height;
+            const indicatorWidth = rect.width - 4; // Account for border
+            const indicatorHeight = rect.height - 4;
+
+            const relativeX = (com.x / canvasWidth) * indicatorWidth;
+            const relativeY = (com.y / canvasHeight) * indicatorHeight;
+
+            comDot.style.left = Math.max(4, Math.min(indicatorWidth, relativeX)) + 'px';
+            comDot.style.top = Math.max(4, Math.min(indicatorHeight, relativeY)) + 'px';
+            comCoords.textContent = `X: ${Math.round(com.x)}, Y: ${Math.round(com.y)}`;
+
+            // Add COM overlay to canvas
+            updateCOMOverlay(com);
+        }
+
+        function updateCOMOverlay(com) {
+            // Remove existing COM overlay
+            document.querySelectorAll('.com-overlay').forEach(el => el.remove());
+
+            if (gameState.mode === 'assembly' && gameState.toolMode !== 'weld') {
+                const overlay = document.createElement('div');
+                overlay.className = 'com-overlay';
+                overlay.style.left = com.x + 'px';
+                overlay.style.top = com.y + 'px';
+                overlay.title = 'Center of Mass';
+                
+                document.getElementById('connectionPoints').appendChild(overlay);
+            }
+        }
+
+        function updateWeightDistribution(distribution) {
+            if (!distribution) return;
+
+            const frontFill = document.getElementById('frontWeight');
+            const rearFill = document.getElementById('rearWeight');
+            const frontValue = document.getElementById('frontValue');
+            const rearValue = document.getElementById('rearValue');
+
+            frontFill.style.setProperty('--fill-width', distribution.front + '%');
+            rearFill.style.setProperty('--fill-width', distribution.rear + '%');
+            frontValue.textContent = Math.round(distribution.front) + '%';
+            rearValue.textContent = Math.round(distribution.rear) + '%';
+        }
+
+        function updateStructuralIntegrity(integrity) {
+            const fill = document.getElementById('integrityFill');
+            const text = document.getElementById('integrityText');
+
+            fill.style.setProperty('--integrity-width', integrity + '%');
+
+            let status = 'Poor';
+            if (integrity >= 80) status = 'Excellent';
+            else if (integrity >= 60) status = 'Good';
+            else if (integrity >= 40) status = 'Fair';
+
+            text.textContent = status;
+        }
+
+        function updatePerformanceRatings(performance) {
+            if (!performance) return;
+
+            const ratings = ['speedRating', 'powerRating', 'defenseRating', 'balanceRating'];
+            const values = [performance.speed, performance.power, performance.defense, performance.balance];
+
+            ratings.forEach((id, index) => {
+                const element = document.getElementById(id);
+                const rating = values[index];
+                element.textContent = '★'.repeat(rating) + '☆'.repeat(5 - rating);
+            });
+        }
+
+        function resetAnalysisDisplay() {
+            document.getElementById('comDot').style.left = '50%';
+            document.getElementById('comDot').style.top = '50%';
+            document.getElementById('comCoords').textContent = 'X: 0, Y: 0';
+            
+            ['frontWeight', 'rearWeight'].forEach(id => {
+                document.getElementById(id).style.setProperty('--fill-width', '0%');
+            });
+            
+            ['frontValue', 'rearValue'].forEach(id => {
+                document.getElementById(id).textContent = '0%';
+            });
+
+            document.getElementById('integrityFill').style.setProperty('--integrity-width', '0%');
+            document.getElementById('integrityText').textContent = 'None';
+
+            ['speedRating', 'powerRating', 'defenseRating', 'balanceRating'].forEach(id => {
+                document.getElementById(id).textContent = '☆☆☆☆☆';
+            });
+
+            // Remove COM overlay
+            document.querySelectorAll('.com-overlay').forEach(el => el.remove());
+        }
+
+        function updateRobotStats() {
+            let totalHealth = 0;
+            let totalMass = 0;
+            let weaponCount = 0;
+            let mobilityCount = 0;
+            
+            gameState.playerRobot.forEach(part => {
+                totalHealth += part.customProps.health;
+                totalMass += part.customProps.mass;
+                
+                if (part.customProps.damage) weaponCount++;
+                if (part.customProps.label === 'wheel') mobilityCount++;
+            });
+            
+            document.getElementById('totalHealth').textContent = totalHealth + ' HP';
+            document.getElementById('totalMass').textContent = totalMass.toFixed(1) + ' kg';
+            document.getElementById('weaponCount').textContent = weaponCount;
+            document.getElementById('mobilityCount').textContent = mobilityCount;
+        }
+
+        function updateValidation() {
+            const validationDiv = document.getElementById('validationResults');
+            const validations = [];
+            
+            // Check for chassis
+            const hasChassis = gameState.playerRobot.some(p => p.customProps.label === 'chassis');
+            validations.push({
+                valid: hasChassis,
+                message: hasChassis ? 'Chassis present' : 'Missing chassis'
+            });
+            
+            // Check for wheels
+            const wheelCount = gameState.playerRobot.filter(p => p.customProps.label === 'wheel').length;
+            validations.push({
+                valid: wheelCount >= 2,
+                message: wheelCount >= 2 ? `${wheelCount} wheels attached` : `Need at least 2 wheels (have ${wheelCount})`
+            });
+            
+            // Check total mass
+            const totalMass = gameState.playerRobot.reduce((sum, p) => sum + p.customProps.mass, 0);
+            validations.push({
+                valid: totalMass <= 100,
+                message: totalMass <= 100 ? `Mass: ${totalMass.toFixed(1)}kg (OK)` : `Too heavy: ${totalMass.toFixed(1)}kg`
+            });
+            
+            let html = '';
+            validations.forEach(v => {
+                html += `
+                    <div class="validation-item ${v.valid ? 'valid' : 'invalid'}">
+                        <span class="validation-icon">${v.valid ? '✓' : '✗'}</span>
+                        <span>${v.message}</span>
+                    </div>
+                `;
+            });
+            
+            validationDiv.innerHTML = html;
+            
+            // Update battle button
+            const canBattle = validations.every(v => v.valid);
+            const battleBtn = document.getElementById('battleBtn');
+            battleBtn.disabled = !canBattle;
+            battleBtn.textContent = canBattle ? 'START BATTLE' : 'FIX ISSUES TO BATTLE';
+        }
+
+        function updateConnectionPointsDisplay() {
+            const container = document.getElementById('connectionPoints');
+            container.innerHTML = '';
+            
+            if (gameState.mode !== 'assembly') return;
+            
+            gameState.playerRobot.forEach(part => {
+                if (!part.customProps.connectionPoints) return;
+                
+                part.customProps.connectionPoints.forEach(point => {
+                    const worldX = part.position.x + point.x;
+                    const worldY = part.position.y + point.y;
+                    
+                    const indicator = document.createElement('div');
+                    indicator.className = 'connection-point';
+                    
+                    // Show during drag or if it's the snap target
+                    if (gameState.isDragging) {
+                        indicator.classList.add('visible');
+                        
+                        if (gameState.snapTarget && gameState.snapTarget.part === part &&
+                            gameState.snapTarget.localPoint === point) {
+                            indicator.classList.add('snap-target');
+                        }
+                    }
+                    
+                    indicator.style.left = worldX + 'px';
+                    indicator.style.top = worldY + 'px';
+                    
+                    container.appendChild(indicator);
+                });
+            });
+        }
+
+        // Battle System
+        function startBattle() {
+            if (!gameState.playerChassis) return;
+            
+            gameState.mode = 'battle';
+            
+            // Update UI
+            document.getElementById('modeIndicator').textContent = 'BATTLE MODE';
+            document.getElementById('canvasTitle').textContent = 'BATTLE ARENA';
+            document.getElementById('battleOverlay').classList.add('active');
+            
+            // Create enemy
+            createEnemy();
+            
+            // Reset health
+            updateHealthBars();
+            
+            playSound('battle');
+        }
+
+        function createEnemy() {
+            const width = gameState.render.options.width;
+            const height = gameState.render.options.height;
+            
+            // Simple enemy robot
+            const chassis = Bodies.rectangle(width - 100, height / 2, 60, 40, {
+                mass: 10,
+                render: { fillStyle: '#8b4513', strokeStyle: '#ffffff', lineWidth: 2 }
+            });
+            
+            chassis.customProps = {
+                label: 'chassis',
+                health: 250,
+                maxHealth: 250,
+                isEnemy: true
+            };
+            chassis.collisionFilter.group = -2;
+            
+            const wheel1 = Bodies.circle(width - 120, height / 2 + 25, 15, {
+                mass: 5,
+                friction: 0.8,
+                render: { fillStyle: '#654321', strokeStyle: '#ffffff', lineWidth: 2 }
+            });
+            
+            wheel1.customProps = {
+                label: 'wheel',
+                health: 80,
+                maxHealth: 80,
+                isEnemy: true,
+                torque: 0.015
+            };
+            wheel1.collisionFilter.group = -2;
+            
+            const wheel2 = Bodies.circle(width - 80, height / 2 + 25, 15, {
+                mass: 5,
+                friction: 0.8,
+                render: { fillStyle: '#654321', strokeStyle: '#ffffff', lineWidth: 2 }
+            });
+            
+            wheel2.customProps = {
+                label: 'wheel',
+                health: 80,
+                maxHealth: 80,
+                isEnemy: true,
+                torque: 0.015
+            };
+            wheel2.collisionFilter.group = -2;
+            
+            const spike = Bodies.rectangle(width - 100, height / 2 - 25, 30, 15, {
+                mass: 3,
+                render: { fillStyle: '#dc143c', strokeStyle: '#ffffff', lineWidth: 2 }
+            });
+            
+            spike.customProps = {
+                label: 'spike',
+                health: 50,
+                maxHealth: 50,
+                damage: 20,
+                isEnemy: true
+            };
+            spike.collisionFilter.group = -2;
+            
+            // Connect with constraints
+            const constraints = [
+                Constraint.create({
+                    bodyA: chassis,
+                    bodyB: wheel1,
+                    pointA: { x: -20, y: 20 },
+                    pointB: { x: 0, y: 0 },
+                    length: 0,
+                    stiffness: 1,
+                    render: { visible: false }
+                }),
+                Constraint.create({
+                    bodyA: chassis,
+                    bodyB: wheel2,
+                    pointA: { x: 20, y: 20 },
+                    pointB: { x: 0, y: 0 },
+                    length: 0,
+                    stiffness: 1,
+                    render: { visible: false }
+                }),
+                Constraint.create({
+                    bodyA: chassis,
+                    bodyB: spike,
+                    pointA: { x: 0, y: -20 },
+                    pointB: { x: 0, y: 0 },
+                    length: 0,
+                    stiffness: 1,
+                    render: { visible: false }
+                })
+            ];
+            
+            World.add(gameState.engine.world, [chassis, wheel1, wheel2, spike, ...constraints]);
+            
+            gameState.enemyRobot = [chassis, wheel1, wheel2, spike];
+            gameState.enemyChassis = chassis;
+        }
+
+        function backToWorkshop() {
+            gameState.mode = 'assembly';
+            
+            // Clear enemy
+            gameState.enemyRobot.forEach(part => {
+                World.remove(gameState.engine.world, part);
+            });
+            gameState.enemyRobot = [];
+            gameState.enemyChassis = null;
+            
+            // Remove enemy constraints
+            gameState.engine.world.constraints.forEach(constraint => {
+                if (constraint.bodyA && constraint.bodyA.customProps && constraint.bodyA.customProps.isEnemy) {
+                    World.remove(gameState.engine.world, constraint);
+                } else if (constraint.bodyB && constraint.bodyB.customProps && constraint.bodyB.customProps.isEnemy) {
+                    World.remove(gameState.engine.world, constraint);
+                }
+            });
+            
+            // Update UI
+            document.getElementById('modeIndicator').textContent = 'ASSEMBLY MODE';
+            document.getElementById('canvasTitle').textContent = 'ROBOT ASSEMBLY WORKSHOP';
+            document.getElementById('battleOverlay').classList.remove('active');
+            document.getElementById('gameOver').classList.remove('active');
+            
+            // Reset health
+            gameState.playerRobot.forEach(part => {
+                if (part.customProps) {
+                    part.customProps.health = part.customProps.maxHealth;
+                }
+            });
+            
+            updateUI();
+        }
+
+        // Game Loop
+        function gameLoop() {
+            if (gameState.mode === 'battle') {
+                handlePlayerInput();
+                handleEnemyAI();
+                updateWeapons();
+                updateHealthBars();
+                checkGameOver();
+            } else if (gameState.mode === 'assembly') {
+                // Update real-time analysis during assembly
+                updateRealTimeAnalysis();
+            }
+        }
+
+        function handlePlayerInput() {
+            if (!gameState.playerChassis) return;
+            
+            const wheels = gameState.playerRobot.filter(p => p.customProps.label === 'wheel');
+            
+            wheels.forEach(wheel => {
+                const torque = wheel.customProps.torque || 0.02;
+                
+                if (gameState.keys.a) {
+                    Body.applyForce(wheel, wheel.position, { x: -torque, y: 0 });
+                }
+                if (gameState.keys.d) {
+                    Body.applyForce(wheel, wheel.position, { x: torque, y: 0 });
+                }
+            });
+            
+            if (gameState.keys.space) {
+                fireWeapons();
+            }
+        }
+
+        function handleEnemyAI() {
+            if (!gameState.enemyChassis || !gameState.playerChassis) return;
+            
+            const enemyWheels = gameState.enemyRobot.filter(p => p.customProps.label === 'wheel');
+            
+            // Simple AI: move towards player
+            const dx = gameState.playerChassis.position.x - gameState.enemyChassis.position.x;
+            const dy = gameState.playerChassis.position.y - gameState.enemyChassis.position.y;
+            
+            const angle = Math.atan2(dy, dx);
+            const enemyAngle = gameState.enemyChassis.angle;
+            
+            let angleDiff = angle - enemyAngle;
+            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+            
+            enemyWheels.forEach(wheel => {
+                const torque = wheel.customProps.torque || 0.015;
+                
+                if (Math.abs(angleDiff) > 0.1) {
+                    // Turn towards player
+                    const turnDir = angleDiff > 0 ? 1 : -1;
+                    Body.applyForce(wheel, wheel.position, { x: turnDir * torque, y: 0 });
+                } else {
+                    // Move forward
+                    Body.applyForce(wheel, wheel.position, { x: torque, y: 0 });
+                }
+            });
+        }
+
+        function fireWeapons() {
+            const currentTime = Date.now();
+            
+            gameState.playerRobot.forEach(part => {
+                if (!part.customProps.weaponType) return;
+                
+                const timeSinceLastFire = currentTime - part.customProps.lastFired;
+                if (timeSinceLastFire < (part.customProps.fireRate || 1000)) return;
+                
+                switch (part.customProps.weaponType) {
+                    case 'projectile':
+                        if (part.customProps.ammo > 0 || part.customProps.ammo === -1) {
+                            fireProjectile(part);
+                            if (part.customProps.ammo > 0) part.customProps.ammo--;
+                            part.customProps.lastFired = currentTime;
+                        }
+                        break;
+                    case 'melee':
+                        Body.setAngularVelocity(part, 0.5);
+                        part.customProps.lastFired = currentTime;
+                        break;
+                }
+            });
+        }
+
+        function fireProjectile(weapon) {
+            const angle = weapon.angle;
+            const speed = weapon.customProps.projectileSpeed || 10;
+            
+            const startX = weapon.position.x + Math.cos(angle) * 40;
+            const startY = weapon.position.y + Math.sin(angle) * 40;
+            
+            const projectile = Bodies.circle(startX, startY, 4, {
+                mass: 0.1,
+                render: { fillStyle: '#00d4ff', strokeStyle: '#ffffff', lineWidth: 1 }
+            });
+            
+            projectile.customProps = {
+                label: 'projectile',
+                damage: weapon.customProps.damage,
+                isProjectile: true,
+                lifetime: 3000,
+                birthTime: Date.now()
+            };
+            
+            projectile.collisionFilter.group = -1;
+            
+            Body.setVelocity(projectile, {
+                x: Math.cos(angle) * speed,
+                y: Math.sin(angle) * speed
+            });
+            
+            World.add(gameState.engine.world, projectile);
+            
+            playSound('fire');
+        }
+
+        function updateWeapons() {
+            // Update spinning weapons
+            gameState.playerRobot.concat(gameState.enemyRobot).forEach(part => {
+                if (part.customProps && part.customProps.spinSpeed) {
+                    Body.setAngularVelocity(part, part.customProps.spinSpeed);
+                }
+            });
+            
+            // Remove old projectiles
+            const currentTime = Date.now();
+            const toRemove = [];
+            
+            gameState.engine.world.bodies.forEach(body => {
+                if (body.customProps && body.customProps.isProjectile) {
+                    if (currentTime - body.customProps.birthTime > body.customProps.lifetime) {
+                        toRemove.push(body);
+                    }
+                }
+            });
+            
+            toRemove.forEach(projectile => {
+                World.remove(gameState.engine.world, projectile);
+            });
+        }
+
+        function updateHealthBars() {
+            if (gameState.playerChassis) {
+                const percent = (gameState.playerChassis.customProps.health / gameState.playerChassis.customProps.maxHealth) * 100;
+                document.getElementById('playerHealth').style.width = percent + '%';
+            }
+            
+            if (gameState.enemyChassis) {
+                const percent = (gameState.enemyChassis.customProps.health / gameState.enemyChassis.customProps.maxHealth) * 100;
+                document.getElementById('enemyHealth').style.width = percent + '%';
+            }
+        }
+
+        function checkGameOver() {
+            let winner = null;
+            
+            if (gameState.playerChassis && gameState.playerChassis.customProps.health <= 0) {
+                winner = 'Enemy';
+            } else if (gameState.enemyChassis && gameState.enemyChassis.customProps.health <= 0) {
+                winner = 'Player';
+            }
+            
+            if (winner) {
+                const gameOver = document.getElementById('gameOver');
+                const title = document.getElementById('gameOverTitle');
+                const subtitle = document.getElementById('gameOverSubtitle');
+                
+                if (winner === 'Player') {
+                    title.textContent = 'VICTORY!';
+                    subtitle.textContent = 'Your robot dominated the battlefield!';
+                } else {
+                    title.textContent = 'DEFEAT!';
+                    subtitle.textContent = 'Your robot was destroyed!';
+                }
+                
+                gameOver.classList.add('active');
+                playSound('explosion');
+            }
+        }
+
+        // Collision System
+        function handleCollisions(event) {
+            if (gameState.mode !== 'battle') return;
+            
+            event.pairs.forEach(pair => {
+                const { bodyA, bodyB } = pair;
+                
+                // Handle projectile hits
+                handleProjectileHit(bodyA, bodyB);
+                
+                // Handle robot collisions
+                if (bodyA.collisionFilter.group !== bodyB.collisionFilter.group) {
+                    const speed = pair.collision.speed || 0;
+                    
+                    if (speed > 2) {
+                        let damageA = speed * 2;
+                        let damageB = speed * 2;
+                        
+                        // Add weapon damage
+                        if (bodyA.customProps && bodyA.customProps.damage) {
+                            damageB += bodyA.customProps.damage;
+                        }
+                        if (bodyB.customProps && bodyB.customProps.damage) {
+                            damageA += bodyB.customProps.damage;
+                        }
+                        
+                        applyDamage(bodyA, damageA);
+                        applyDamage(bodyB, damageB);
+                        
+                        playSound('hit');
+                    }
+                }
+            });
+        }
+
+        function handleProjectileHit(bodyA, bodyB) {
+            let projectile = null;
+            let target = null;
+            
+            if (bodyA.customProps && bodyA.customProps.isProjectile) {
+                projectile = bodyA;
+                target = bodyB;
+            } else if (bodyB.customProps && bodyB.customProps.isProjectile) {
+                projectile = bodyB;
+                target = bodyA;
+            }
+            
+            if (projectile && target && projectile.collisionFilter.group !== target.collisionFilter.group) {
+                applyDamage(target, projectile.customProps.damage);
+                World.remove(gameState.engine.world, projectile);
+                
+                // Explosion effect
+                createExplosion(projectile.position.x, projectile.position.y);
+                playSound('explosion');
+            }
+        }
+
+        function applyDamage(body, damage) {
+            if (!body.customProps) return;
+            
+            body.customProps.health -= damage;
+            
+            if (body.customProps.health <= 0) {
+                destroyPart(body);
+            }
+        }
+
+        function destroyPart(body) {
+            createExplosion(body.position.x, body.position.y);
+            
+            // Remove from tracking
+            const playerIndex = gameState.playerRobot.indexOf(body);
+            if (playerIndex !== -1) {
+                gameState.playerRobot.splice(playerIndex, 1);
+            }
+            
+            const enemyIndex = gameState.enemyRobot.indexOf(body);
+            if (enemyIndex !== -1) {
+                gameState.enemyRobot.splice(enemyIndex, 1);
+            }
+            
+            // Update chassis references
+            if (body === gameState.playerChassis) {
+                gameState.playerChassis = null;
+            }
+            if (body === gameState.enemyChassis) {
+                gameState.enemyChassis = null;
+            }
+            
+            // Remove constraints
+            const constraintsToRemove = gameState.engine.world.constraints.filter(constraint => 
+                constraint.bodyA === body || constraint.bodyB === body
+            );
+            constraintsToRemove.forEach(constraint => {
+                World.remove(gameState.engine.world, constraint);
+            });
+            
+            World.remove(gameState.engine.world, body);
+            playSound('explosion');
+        }
+
+        function createExplosion(x, y) {
+            const explosion = document.createElement('div');
+            explosion.className = 'explosion';
+            explosion.style.left = (x - 15) + 'px';
+            explosion.style.top = (y - 15) + 'px';
+            
+            document.getElementById('connectionPoints').appendChild(explosion);
+            
+            setTimeout(() => {
+                explosion.remove();
+            }, 600);
+        }
+
+        // Input Handling
+        function handleKeyDown(e) {
+            if (gameState.mode !== 'battle') return;
+            
+            switch (e.key.toLowerCase()) {
+                case 'a':
+                    gameState.keys.a = true;
+                    e.preventDefault();
+                    break;
+                case 'd':
+                    gameState.keys.d = true;
+                    e.preventDefault();
+                    break;
+                case ' ':
+                    gameState.keys.space = true;
+                    e.preventDefault();
+                    break;
+            }
+        }
+
+        function handleKeyUp(e) {
+            switch (e.key.toLowerCase()) {
+                case 'a':
+                    gameState.keys.a = false;
+                    break;
+                case 'd':
+                    gameState.keys.d = false;
+                    break;
+                case ' ':
+                    gameState.keys.space = false;
+                    break;
+            }
+        }
+
+        // Save/Load System
+        function saveRobot() {
+            if (gameState.playerRobot.length === 0) {
+                alert('No robot to save!');
+                return;
+            }
+            
+            const design = {
+                parts: [],
+                constraints: []
+            };
+            
+            gameState.playerRobot.forEach((part, index) => {
+                design.parts.push({
+                    id: index,
+                    type: part.customProps.partType,
+                    position: { x: part.position.x, y: part.position.y },
+                    angle: part.angle,
+                    health: part.customProps.maxHealth
+                });
+            });
+            
+            gameState.engine.world.constraints.forEach(constraint => {
+                if (constraint.bodyA && constraint.bodyB && !constraint.bodyA.isStatic && !constraint.bodyB.isStatic) {
+                    const indexA = gameState.playerRobot.indexOf(constraint.bodyA);
+                    const indexB = gameState.playerRobot.indexOf(constraint.bodyB);
+                    
+                    if (indexA !== -1 && indexB !== -1) {
+                        design.constraints.push({
+                            bodyA: indexA,
+                            bodyB: indexB,
+                            pointA: constraint.pointA,
+                            pointB: constraint.pointB
+                        });
+                    }
+                }
+            });
+            
+            document.getElementById('saveData').value = JSON.stringify(design, null, 2);
+            
+            // Copy to clipboard
+            navigator.clipboard.writeText(JSON.stringify(design, null, 2)).then(() => {
+                alert('Robot design copied to clipboard!');
+            });
+            
+            playSound('click');
+        }
+
+        function loadRobot() {
+            const designText = prompt('Paste your robot design:');
+            if (!designText) return;
+            
+            try {
+                const design = JSON.parse(designText);
+                
+                // Clear current robot
+                clearRobot();
+                
+                // Create parts
+                const createdParts = [];
+                design.parts.forEach((partData, index) => {
+                    const component = gameState.components[partData.type];
+                    if (component) {
+                        const body = createPartFromData(component, partData);
+                        createdParts[index] = body;
+                    }
+                });
+                
+                // Create constraints
+                if (design.constraints) {
+                    design.constraints.forEach(constraintData => {
+                        const bodyA = createdParts[constraintData.bodyA];
+                        const bodyB = createdParts[constraintData.bodyB];
+                        
+                        if (bodyA && bodyB) {
+                            const constraint = Constraint.create({
+                                bodyA: bodyA,
+                                bodyB: bodyB,
+                                pointA: constraintData.pointA,
+                                pointB: constraintData.pointB,
+                                length: 0,
+                                stiffness: 1,
+                                render: { visible: false }
+                            });
+                            
+                            World.add(gameState.engine.world, constraint);
+                        }
+                    });
+                }
+                
+                updateUI();
+                playSound('click');
+                
+            } catch (error) {
+                alert('Invalid design data: ' + error.message);
+            }
+        }
+
+        function createPartFromData(component, data) {
+            let body;
+            
+            if (component.radius) {
+                body = Bodies.circle(data.position.x, data.position.y, component.radius, {
+                    mass: component.mass,
+                    friction: component.friction || 0.3,
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            } else {
+                body = Bodies.rectangle(data.position.x, data.position.y, component.width, component.height, {
+                    mass: component.mass,
+                    render: {
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 2
+                    }
+                });
+            }
+            
+            Body.setAngle(body, data.angle);
+            
+            body.customProps = {
+                ...component,
+                health: component.health,
+                maxHealth: component.health,
+                lastFired: 0,
+                ammo: component.ammo || -1,
+                partType: data.type
+            };
+            
+            body.collisionFilter.group = -1;
+            
+            World.add(gameState.engine.world, body);
+            gameState.playerRobot.push(body);
+            
+            if (component.label === 'chassis') {
+                gameState.playerChassis = body;
+            }
+            
+            return body;
+        }
+
+        function clearRobot() {
+            // Clear welding selections first
+            clearWeldSelection();
+            
+            gameState.playerRobot.forEach(part => {
+                World.remove(gameState.engine.world, part);
+            });
+            
+            // Remove non-static constraints
+            gameState.engine.world.constraints.forEach(constraint => {
+                if (!constraint.bodyA || !constraint.bodyA.isStatic) {
+                    World.remove(gameState.engine.world, constraint);
+                }
+            });
+            
+            gameState.playerRobot = [];
+            gameState.playerChassis = null;
+            gameState.weldedConnections = [];
+            
+            updateUI();
+            playSound('click');
+        }
+
+        // Audio System
+        function playSound(type) {
+            if (!gameState.audioContext) return;
+            
+            const oscillator = gameState.audioContext.createOscillator();
+            const gainNode = gameState.audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(gameState.audioContext.destination);
+            
+            let frequency, duration;
+            
+            switch (type) {
+                case 'click':
+                    frequency = 800;
+                    duration = 0.1;
+                    break;
+                case 'hit':
+                    frequency = 400;
+                    duration = 0.2;
+                    break;
+                case 'fire':
+                    frequency = 1000;
+                    duration = 0.15;
+                    break;
+                case 'explosion':
+                    frequency = 200;
+                    duration = 0.3;
+                    break;
+                case 'battle':
+                    frequency = 600;
+                    duration = 0.5;
+                    break;
+                case 'weld':
+                    frequency = 1200;
+                    duration = 0.4;
+                    oscillator.frequency.setValueAtTime(1200, gameState.audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(800, gameState.audioContext.currentTime + duration);
+                    break;
+                default:
+                    return;
+            }
+            
+            if (type !== 'weld') {
+                oscillator.frequency.setValueAtTime(frequency, gameState.audioContext.currentTime);
+            }
+            
+            oscillator.start();
+            oscillator.stop(gameState.audioContext.currentTime + duration);
+            
+            gainNode.gain.setValueAtTime(0.3, gameState.audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, gameState.audioContext.currentTime + duration);
+        }
+
+        // Initialize when ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>
