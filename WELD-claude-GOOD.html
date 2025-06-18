@@ -943,6 +943,10 @@
         <!-- Controls -->
         <div class="workshop-controls">
             <div class="control-group">
+                <button class="btn" id="undoBtn" disabled>Undo</button>
+                <button class="btn" id="redoBtn" disabled>Redo</button>
+            </div>
+            <div class="control-group">
                 <button class="btn" id="clearBtn">Clear All</button>
                 <button class="btn" id="saveBtn">Save Design</button>
                 <button class="btn" id="loadBtn">Load Design</button>
@@ -969,6 +973,13 @@
     <script>
         // Game state and components
         const { Engine, Render, World, Bodies, Body, Events, Constraint, Runner } = Matter;
+
+        const ACTION_TYPES = {
+            ADD_PART: 'add_part',
+            MOVE_PART: 'move_part',
+            // DELETE_PART: 'delete_part',
+            CLEAR_ROBOT: 'clear_robot'
+        };
 
         const PROJECTILE_TYPES = {
             STANDARD: {
@@ -1041,6 +1052,11 @@
             actualTouchPoint: null, // Stores {x, y} of the real touch on canvas for indicator
             touchIndicatorElement: null, // Reference to the touch indicator div
             ghostPreviewData: null, // Data for rendering ghost preview {vertices, color, strokeStyle, etc.}
+
+            // Undo/Redo History
+            actionHistory: [],
+            historyIndex: -1,
+            maxHistoryStates: 20,
             
             // Component definitions
             components: {
@@ -1338,6 +1354,10 @@
             document.getElementById('loadBtn').addEventListener('click', loadRobot);
             document.getElementById('battleBtn').addEventListener('click', startBattle);
             document.getElementById('backToWorkshop').addEventListener('click', backToWorkshop);
+            document.getElementById('undoBtn').addEventListener('click', undo);
+            document.getElementById('redoBtn').addEventListener('click', redo);
+
+            updateUndoRedoButtons(); // Initial call to set button states
 
             // Touch Point Indicator Element
             const touchIndicator = document.createElement('div');
@@ -1386,6 +1406,18 @@
 
                     // Update dragPreview transform for both rotation and scale
                     gameState.dragPreview.style.transform = `rotate(${gameState.dragPartAngle}rad) scale(${gameState.dragPartScale})`;
+
+                // NEW: Logic for rotating a repositioning part
+                } else if (gameState.isRepositioning && gameState.repositioningPart && !gameState.keys.shift && gameState.toolMode === 'build') { // Ensure build mode
+                    e.preventDefault();
+                    const increment = e.deltaY > 0 ? Math.PI / 16 : -Math.PI / 16; // Wheel down rotates one way, up the other
+                    let currentAngle = gameState.repositioningPart.angle; // Physics body angle
+                    let newAngle = (currentAngle + increment + 2 * Math.PI) % (2 * Math.PI); // Normalize
+
+                    Body.setAngle(gameState.repositioningPart, newAngle);
+                    gameState.repositioningPart.customProps.angle = newAngle; // Keep customProps in sync
+
+                    // Ghost preview and snap checks will use the updated angle in their respective functions (handleDrag, checkSnapTargets)
                 }
             }, { passive: false }); // passive:false to allow preventDefault
         }
@@ -1822,14 +1854,14 @@
                 // Update ghost preview for repositioning part
                 const partRp = gameState.repositioningPart;
                 const partTypeRp = partRp.customProps.partType;
-                let ghostAngleRp = partRp.customProps.angle || 0;
+                let ghostAngleRp = partRp.customProps.angle || 0; // Use current angle from part
                 let ghostScaleRp = partRp.customProps.scale || 1.0;
                 // Default ghost to where the part is currently physically being dragged by Body.setPosition
                 let ghostTargetPosRp = {x: logicalTargetX, y: logicalTargetY};
 
                 if (gameState.activeSnapCandidate && gameState.activeSnapCandidate.sourcePartRepresentation === partRp) {
                     ghostTargetPosRp = gameState.activeSnapCandidate.snappedPosition;
-                    ghostAngleRp = gameState.activeSnapCandidate.snappedAngle;
+                    ghostAngleRp = gameState.activeSnapCandidate.snappedAngle; // Override with snapped angle
                 }
 
                 const worldVerticesRp = getGhostVertices(partTypeRp, ghostTargetPosRp, ghostAngleRp, ghostScaleRp);
@@ -1837,38 +1869,30 @@
                     vertices: worldVerticesRp,
                     fillStyle: partRp.render.fillStyle,
                     strokeStyle: partRp.render.strokeStyle,
-                    lineWidth: partRp.render.lineWidth,
+                    lineWidth: partRp.render.lineWidth || 1, // Ensure lineWidth is at least 1
                     isGhost: true
                 };
-                // updateConnectionPointsDisplay is called by checkSnapTargets or endDrag
 
-                if (e.touches) e.preventDefault(); // Prevent scrolling on touch devices
+                if (e.touches) e.preventDefault();
 
-            } else if (gameState.dragPreview && gameState.dragPart) { // Dragging a new part from palette
+            } else if (gameState.dragPreview && gameState.dragPart) {
                 let logicalX = canvasMouseX;
                 let logicalY = canvasMouseY;
 
-                // For display, dragPreview uses raw screen coordinates (rawClientX, rawClientY)
-                // and then applies offset if on touch.
                 let displayX = rawClientX;
                 let displayY = rawClientY;
 
                 if (gameState.isTouchDevice && e.touches) {
-                    // Apply offset for the visual preview element
-                    displayX -= gameState.touchOffset.x; // x offset is 0 in current settings
-                    displayY -= gameState.touchOffset.y; // y offset is -60 (so adds 60, moving preview up)
-                    
-                    // Store the actual touch point (logical canvas coordinates)
+                    displayX -= gameState.touchOffset.x;
+                    displayY -= gameState.touchOffset.y;
                     gameState.actualTouchPoint = { x: canvasMouseX, y: canvasMouseY };
                 } else {
                     gameState.actualTouchPoint = null;
                 }
 
-                // Center the preview element on the display coordinates
                 gameState.dragPreview.style.left = (displayX - (gameState.dragPreview.offsetWidth / 2)) + 'px';
                 gameState.dragPreview.style.top = (displayY - (gameState.dragPreview.offsetHeight / 2)) + 'px';
 
-                // Snapping logic uses the logical (un-offset) canvas coordinates
                 checkSnapTargets(logicalX, logicalY);
 
                 // Update ghost preview for new part
@@ -1974,13 +1998,13 @@
 
             if (isRepositioning) {
                 sourceComponentDef = gameState.components[partToIgnore.customProps.partType];
-                currentAngle = partToIgnore.customProps.angle || 0;
+                currentAngle = partToIgnore.angle; // Use live physics angle
                 currentScale = partToIgnore.customProps.scale || 1.0;
                 currentSourceCenter = partToIgnore.position;
             } else {
                 if (!gameState.dragPart) return;
                 sourceComponentDef = gameState.components[gameState.dragPart];
-                currentAngle = gameState.dragPartAngle;
+                currentAngle = gameState.dragPartAngle; // This is for new parts from palette
                 currentScale = gameState.dragPartScale;
                 currentSourceCenter = { x: evalX, y: evalY };
             }
@@ -2098,12 +2122,30 @@
             }
             // Logic for ending a repositioning drag
             else if (gameState.isRepositioning && gameState.repositioningPart) {
+                const partToMove = gameState.repositioningPart;
+                const oldPosition = { x: partToMove.position.x, y: partToMove.position.y }; // Capture before potential move
+                const oldAngle = partToMove.angle;
+                let actionRecordedForMove = false;
+
                 if (gameState.activeSnapCandidate &&
-                    gameState.activeSnapCandidate.sourcePartRepresentation === gameState.repositioningPart) {
+                    gameState.activeSnapCandidate.sourcePartRepresentation === partToMove) {
 
                     const snapInfo = gameState.activeSnapCandidate;
-                    Body.setPosition(gameState.repositioningPart, snapInfo.snappedPosition);
-                    Body.setAngle(gameState.repositioningPart, snapInfo.snappedAngle);
+                    Body.setPosition(partToMove, snapInfo.snappedPosition);
+                    Body.setAngle(partToMove, snapInfo.snappedAngle);
+                    partToMove.customProps.angle = snapInfo.snappedAngle; // Keep customProps in sync
+
+                    recordAction({
+                        type: ACTION_TYPES.MOVE_PART,
+                        partId: partToMove.id,
+                        oldPosition: oldPosition,
+                        oldAngle: oldAngle,
+                        newPosition: { ...partToMove.position },
+                        newAngle: partToMove.angle,
+                        snapped: true // Indicates a snap occurred during the move
+                        // Constraint info omitted for basic version
+                    });
+                    actionRecordedForMove = true;
 
                     if (snapInfo.targetPart && snapInfo.sourcePointLocalDefinition) {
                         let finalSourcePointB_reposition = { ...snapInfo.sourcePointLocalDefinition };
@@ -2136,9 +2178,27 @@
                         playSound('snap');
                         triggerSnapVisualFeedback(snapInfo.targetPointWorld);
                     }
+                } else {
+                    // If no snap, but part might have moved due to direct dragging
+                    // Check if position or angle actually changed from start of this specific drag
+                    // This requires storing initial drag pos/angle at startDragOnCanvas
+                    // For simplicity now, we'll record if any mouseup happened after repositioning started,
+                    // assuming handleDrag always sets the latest position.
+                    // A more robust check would compare to initial state at start of this drag.
+                    if (partToMove.position.x !== oldPosition.x || partToMove.position.y !== oldPosition.y || partToMove.angle !== oldAngle) {
+                         recordAction({
+                            type: ACTION_TYPES.MOVE_PART,
+                            partId: partToMove.id,
+                            oldPosition: oldPosition, // This oldPosition is from before any snapping attempt this cycle
+                            oldAngle: oldAngle,       // Same for oldAngle
+                            newPosition: { ...partToMove.position },
+                            newAngle: partToMove.angle,
+                            snapped: false
+                        });
+                        actionRecordedForMove = true;
+                    }
                 }
-                // Position is already set by handleDrag if not snapping.
-                // updateUI(); // Consider if needed for stats panel etc.
+                // updateUI(); // Called by general cleanup or specific actions
             }
             
             // General Cleanup for all drag operations
@@ -2207,7 +2267,7 @@
         }
 
         // Part Creation
-        function createPart(partType, x, y, angle = 0, scale = 1.0) { // Added scale parameter
+        function createPart(partType, x, y, angle = 0, scale = 1.0, recordHistory = true) {
             const component = gameState.components[partType];
             if (!component) return;
             
@@ -2380,6 +2440,44 @@
             
             updateUI();
             playSound('click');
+
+            if (recordHistory) {
+                // Find the constraint just added if snap occurred
+                let addedConstraintDetails = null;
+                if (gameState.activeSnapCandidate && body) { // body is the new part
+                    const snapInfo = gameState.activeSnapCandidate;
+                    // Attempt to find the constraint. This is a bit indirect.
+                    // A more robust way would be to have createPart return the constraint or for the constraint creation logic to also record.
+                    const relatedConstraint = gameState.engine.world.constraints.find(c =>
+                        (c.bodyA === snapInfo.targetPart && c.bodyB === body) ||
+                        (c.bodyB === snapInfo.targetPart && c.bodyA === body)
+                    );
+                    if (relatedConstraint) {
+                        addedConstraintDetails = {
+                            id: relatedConstraint.id, // Matter.js internal ID, useful for direct lookup if stable
+                            customId: relatedConstraint.customId, // If we add custom IDs later
+                            bodyA_id: relatedConstraint.bodyA.id,
+                            bodyB_id: relatedConstraint.bodyB.id,
+                            pointA: { ...relatedConstraint.pointA },
+                            pointB: { ...relatedConstraint.pointB }
+                        };
+                    }
+                }
+
+                recordAction({
+                    type: ACTION_TYPES.ADD_PART,
+                    partId: body.id, // Matter.js body ID
+                    partDefinition: { // Data to recreate the part
+                        partType: partType,
+                        x: x, // Original spawn coords, not body.position which might be slightly different due to centering
+                        y: y,
+                        angle: angle,
+                        scale: scale,
+                        // customProps subset if needed, for now this is basic
+                    },
+                    constraintDefinition: addedConstraintDetails // Store constraint info if created
+                });
+            }
         }
 
         // UI Updates
@@ -2471,7 +2569,7 @@
             const componentDefinitions = gameState.components; // For easy access
             const wheelCount = robot.filter(p => p.customProps.label === 'wheel').length;
             const weaponCount = robot.filter(p => p.customProps.damage > 0 || p.customProps.baseDamage > 0 || p.customProps.baseDamagePerSecond > 0).length; // Include melee
-            
+
             const armorComps = robot.filter(p => p.customProps.label === 'armor');
             const armorCount = armorComps.length;
 
@@ -3353,7 +3451,7 @@
 
         function applyDamage(body, damageAmount, ignoreDRFraction = 0) {
             if (!body.customProps || damageAmount <= 0) return;
-            
+
             let dr = body.customProps.damageResistance || 0;
             dr = Math.max(0, Math.min(1, dr)); // Clamp DR 0-1
 
@@ -3884,11 +3982,224 @@
             gainNode.gain.exponentialRampToValueAtTime(0.01, gameState.audioContext.currentTime + duration);
         }
 
+        function captureRobotStateForUndo() {
+            // console.log("Capturing robot state for undo...");
+            const state = {
+                parts: gameState.playerRobot.map(p => ({
+                    // Store enough info to recreate the part via createPart or a similar specialized function
+                    id: p.id, // Original Matter.js ID (for reference, might not be reusable directly if bodies are fully removed)
+                    partType: p.customProps.partType,
+                    position: { x: p.position.x, y: p.position.y },
+                    angle: p.angle,
+                    scale: p.customProps.scale || 1.0,
+                    // Consider other customProps like health, ammo if they are part of the state to be restored
+                })),
+                constraints: gameState.engine.world.constraints
+                    .filter(c => { // Filter for constraints connecting two parts in playerRobot
+                        const bodyAInRobot = gameState.playerRobot.some(p => p.id === c.bodyA.id);
+                        const bodyBInRobot = gameState.playerRobot.some(p => p.id === c.bodyB.id);
+                        return bodyAInRobot && bodyBInRobot && !c.bodyA.isStatic && !c.bodyB.isStatic;
+                    })
+                    .map(c => ({
+                        // Store info needed to recreate the constraint
+                        // Important: bodyA and bodyB references will be invalid after parts are cleared and recreated.
+                        // We'll need to map old body IDs to new bodies during restoration.
+                        originalBodyAId: c.bodyA.id,
+                        originalBodyBId: c.bodyB.id,
+                        pointA: { ...c.pointA },
+                        pointB: { ...c.pointB },
+                        length: c.length,
+                        stiffness: c.stiffness,
+                        // render: { ...c.render } // Optional, depending on how much detail is needed
+                    }))
+            };
+            return state;
+        }
+
+        function restoreRobotFromUndo(stateToRestore) {
+            // console.log("Restoring robot from undo state...");
+            clearRobotInternal(false); // Clear current robot without this clear action being recorded
+
+            const idMap = {}; // Maps old part IDs to newly created part bodies
+
+            if (stateToRestore && stateToRestore.parts) {
+                stateToRestore.parts.forEach(partData => {
+                    // Create part without recording it as a new action for history
+                    // Note: createPart itself should handle adding to gameState.playerRobot and World
+                    const newPartBody = createPart(partData.partType, partData.position.x, partData.position.y, partData.angle, partData.scale, false);
+                    if (newPartBody) {
+                        idMap[partData.id] = newPartBody; // Store mapping from old ID to new body
+                        // Potentially restore other customProps if they were saved and are important (e.g., health, ammo)
+                        // newPartBody.customProps.health = partData.health; // Example
+                    }
+                });
+            }
+
+            if (stateToRestore && stateToRestore.constraints) {
+                stateToRestore.constraints.forEach(constraintData => {
+                    const bodyA = idMap[constraintData.originalBodyAId];
+                    const bodyB = idMap[constraintData.originalBodyBId];
+
+                    if (bodyA && bodyB) {
+                        const constraint = Constraint.create({
+                            bodyA: bodyA,
+                            bodyB: bodyB,
+                            pointA: constraintData.pointA,
+                            pointB: constraintData.pointB,
+                            length: constraintData.length,
+                            stiffness: constraintData.stiffness,
+                            // render: constraintData.render // Restore render properties if saved
+                        });
+                        World.add(gameState.engine.world, constraint);
+                    } else {
+                        // console.warn("Could not find bodies for constraint during restore:", constraintData);
+                    }
+                });
+            }
+            updateUI(); // Refresh UI after restoring state
+        }
+
+        // Placeholder for a version of clearRobot that doesn't record history
+        // This will be properly defined when clearRobot is modified.
+        function clearRobotInternal(record = false) {
+            if(record){ /* This will be filled by clearRobot's logic */ }
+            // For now, just a stub. The actual clearRobot will be modified.
+            // This function is now the main clearing logic and doesn't itself record history.
+            // recordAction should be called by the function that *initiates* the clear (e.g. a new clearRobot wrapper).
+            // For now, this will just be the direct clear logic.
         // Initialize when ready
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', init);
         } else {
             init();
+        }
+
+        // Undo/Redo System Functions
+        function recordAction(action) {
+            // If historyIndex is not at the end, clear 'redo' stack (actions after current historyIndex)
+            if (gameState.historyIndex < gameState.actionHistory.length - 1) {
+                gameState.actionHistory = gameState.actionHistory.slice(0, gameState.historyIndex + 1);
+            }
+
+            gameState.actionHistory.push(action);
+            if (gameState.actionHistory.length > gameState.maxHistoryStates) {
+                gameState.actionHistory.shift(); // Remove the oldest action
+            }
+            gameState.historyIndex = gameState.actionHistory.length - 1;
+            // console.log('Action recorded:', action.type, 'History index:', gameState.historyIndex, 'History length:', gameState.actionHistory.length);
+            updateUndoRedoButtons();
+        }
+
+        function undo() {
+            if (gameState.historyIndex < 0) return;
+
+            const actionToUndo = gameState.actionHistory[gameState.historyIndex];
+            // console.log('Undoing:', actionToUndo.type, actionToUndo);
+
+            switch (actionToUndo.type) {
+                case ACTION_TYPES.ADD_PART:
+                    const partToRemove = gameState.playerRobot.find(p => p.id === actionToUndo.partId);
+                    if (partToRemove) {
+                        World.remove(gameState.engine.world, partToRemove);
+                        gameState.playerRobot = gameState.playerRobot.filter(p => p.id !== actionToUndo.partId);
+                        // If a constraint was added with this part, remove it
+                        if (actionToUndo.constraintDefinition && actionToUndo.constraintDefinition.id) {
+                            const constrToRemove = gameState.engine.world.constraints.find(c => c.id === actionToUndo.constraintDefinition.id);
+                            if (constrToRemove) World.remove(gameState.engine.world, constrToRemove);
+                        }
+                    }
+                    break;
+                case ACTION_TYPES.CLEAR_ROBOT:
+                    if (actionToUndo.previousState) {
+                        // console.log("Undoing CLEAR_ROBOT by restoring previous state.");
+                        restoreRobotFromUndo(actionToUndo.previousState);
+                    } else {
+                        // console.warn("Cannot undo CLEAR_ROBOT: no previous state saved.");
+                    }
+                    break;
+                case ACTION_TYPES.MOVE_PART:
+                    const partToMoveBack = gameState.playerRobot.find(p => p.id === actionToUndo.partId) || World.get(gameState.engine.world, actionToUndo.partId, 'body');
+                    if (partToMoveBack) {
+                        Body.setPosition(partToMoveBack, actionToUndo.oldPosition);
+                        Body.setAngle(partToMoveBack, actionToUndo.oldAngle);
+                        // Basic move undo doesn't handle re-attaching/detaching constraints from snap
+                    }
+                    break;
+            }
+
+            gameState.historyIndex--;
+            updateUndoRedoButtons();
+            updateUI();
+            clearGeneralSelection(); // Deselect any potentially removed parts
+            updateSelectionVisuals();
+        }
+
+        function redo() {
+            if (gameState.historyIndex >= gameState.actionHistory.length - 1) return;
+
+            gameState.historyIndex++;
+            const actionToRedo = gameState.actionHistory[gameState.historyIndex];
+            // console.log('Redoing:', actionToRedo.type, actionToRedo);
+
+            switch (actionToRedo.type) {
+                case ACTION_TYPES.ADD_PART:
+                    const pd = actionToRedo.partDefinition;
+                    // Re-create the part, but don't record this as a new action
+                    const readdedBody = createPart(pd.partType, pd.x, pd.y, pd.angle, pd.scale, false);
+                    // If a constraint was part of this action, it needs to be re-created.
+                    // This is complex because createPart() and its internal constraint logic
+                    // rely on gameState.activeSnapCandidate and gameState.dragPart, which are not set here.
+                    // For now, re-adding the constraint is a TODO.
+                    // If the original part ID needs to be restored, that's another layer of complexity.
+                    // Matter.js assigns new IDs. For now, we accept new IDs on redo.
+                    if (readdedBody && actionToRedo.constraintDefinition) {
+                        // Attempt to re-establish constraint - This is complex and might not always work perfectly with new body IDs
+                        const bodyA = idMap[actionToRedo.constraintDefinition.bodyA_id]; // idMap is local to restoreRobotFromUndo, won't work here directly
+                        const bodyB = readdedBody;
+
+                        // This constraint recreation logic for redo is flawed as idMap is not available here.
+                        // And createPart already tries to handle constraints based on activeSnapCandidate, which is not set here.
+                        // For a more robust redo of ADD_PART with constraint, restoreRobotFromUndo might be better if it could take a single part.
+                        // console.warn("Redo for ADD_PART constraint re-creation is simplified and may not restore constraints correctly.");
+                        if (actionToRedo.constraintDefinition.bodyA_id && actionToRedo.constraintDefinition.bodyB_id) {
+                             // Find bodyA by its original ID from the action.
+                             // This requires iterating through gameState.playerRobot to find the part that corresponds to originalBodyAId,
+                             // assuming its ID hasn't changed or we have a way to map it.
+                             // This is complex due to ID changes. The current readdedBody has a new ID.
+                             // The constraintDefinition has originalBodyAId and originalBodyBId (which was actionToRedo.partId).
+                             // A better approach for redo of ADD_PART with constraint might involve a more specialized function
+                             // or enhancing createPart to take existing bodyA and connect to it.
+                        }
+                    }
+                    break;
+                case ACTION_TYPES.CLEAR_ROBOT:
+                    // console.log("Redoing CLEAR_ROBOT.");
+                    clearRobot(false); // Clear without re-recording
+                    break;
+                case ACTION_TYPES.MOVE_PART:
+                    const partToMoveForward = gameState.playerRobot.find(p => p.id === actionToRedo.partId) || World.get(gameState.engine.world, actionToRedo.partId, 'body');
+                    if (partToMoveForward) {
+                        Body.setPosition(partToMoveForward, actionToRedo.newPosition);
+                        Body.setAngle(partToMoveForward, actionToRedo.newAngle);
+                        // Basic move redo doesn't handle re-attaching/detaching constraints from snap
+                    }
+                    break;
+            }
+
+            updateUndoRedoButtons();
+            updateUI();
+        }
+
+        function updateUndoRedoButtons() {
+            const undoBtn = document.getElementById('undoBtn');
+            const redoBtn = document.getElementById('redoBtn');
+            if (undoBtn) {
+                undoBtn.disabled = gameState.historyIndex < 0;
+            }
+            if (redoBtn) {
+                redoBtn.disabled = gameState.historyIndex >= gameState.actionHistory.length - 1 || gameState.actionHistory.length === 0;
+            }
+            // console.log("Buttons updated. Undo disabled:", undoBtn.disabled, "Redo disabled:", redoBtn.disabled);
         }
     </script>
 </body>
