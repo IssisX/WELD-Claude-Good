@@ -1020,10 +1020,27 @@
             dragPreview: null,
             dragPartAngle: 0, // Current rotation of the part being dragged
             dragPartScale: 1.0, // Current scale of the part being dragged
-            snapTarget: null,
-            
+            activeSnapCandidate: null, // Stores details of the best current snap target
+            snapRadius: 25, // Pixel distance to trigger a snap
+            selectedParts: [], // For general part selection
+            selectionColor: '#FFD700', // Gold for selection highlight
+
+            // Repositioning state
+            isRepositioning: false,
+            repositioningPart: null,
+            dragStartOffset: { x: 0, y: 0 },
+            mouseDownTargetForClick: null, // For distinguishing click vs drag
+            mouseDownTimeForClick: 0,      // For distinguishing click vs drag
+
             // Audio
             audioContext: null,
+
+            // Touch device handling
+            isTouchDevice: false,
+            touchOffset: { x: 0, y: -60 }, // Offset part preview 60px upwards from actual touch point
+            actualTouchPoint: null, // Stores {x, y} of the real touch on canvas for indicator
+            touchIndicatorElement: null, // Reference to the touch indicator div
+            ghostPreviewData: null, // Data for rendering ghost preview {vertices, color, strokeStyle, etc.}
             
             // Component definitions
             components: {
@@ -1052,15 +1069,17 @@
                         { x: 0, y: -20, type: 'weapon_mount' }, { x: 0, y: 20, type: 'wheel_axle' }
                     ]
                 },
-                spike: {
+                spike: { // Spike doesn't "fire", it damages on collision if velocity is high enough
                     label: 'spike',
                     health: 60,
                     mass: 4,
                     width: 40,
                     height: 20,
-                    damage: 25,
                     color: '#e74c3c',
-                    connectionPoints: [{ x: -20, y: 0, type: 'structural' }] // Can attach to any structural point
+                    weaponType: 'melee_piercing', // Updated
+                    baseDamage: 30,
+                    impactVelocityThreshold: 0.8,
+                    connectionPoints: [{ x: -20, y: 0, type: 'structural' }]
                 },
                 hammer: {
                     label: 'hammer',
@@ -1076,18 +1095,6 @@
                     impactVelocityThreshold: 0.3,
                     fireRate: 1200, // ms
                     connectionPoints: [{ x: 0, y: 25, type: 'structural' }] // Mounts via its base
-                },
-                spike: { // Spike doesn't "fire", it damages on collision if velocity is high enough
-                    label: 'spike',
-                    health: 60,
-                    mass: 4,
-                    width: 40,
-                    height: 20,
-                    color: '#e74c3c',
-                    weaponType: 'melee_piercing', // Updated
-                    baseDamage: 30,
-                    impactVelocityThreshold: 0.8,
-                    connectionPoints: [{ x: -20, y: 0, type: 'structural' }]
                 },
                 saw: {
                     label: 'saw',
@@ -1107,7 +1114,7 @@
                     mass: 5,
                     width: 50,
                     height: 20,
-                    damage: 40,
+                    damage: 40, // Base damage, might be overridden by projectile type
                     weaponType: 'projectile',
                     fireRate: 1500,
                     projectileSpeed: 15, // This might become redundant if speed is per projectile type
@@ -1198,6 +1205,13 @@
 
         // Initialize the game
         function init() {
+            // Detect touch device (run this early)
+            window.addEventListener('touchstart', function detectTouchOnce() {
+                gameState.isTouchDevice = true;
+                // console.log('Touch device detected. Applying touch offsets.');
+                window.removeEventListener('touchstart', detectTouchOnce, { passive: true });
+            }, { passive: true, once: true });
+
             setupPhysics();
             setupUI();
             setupAudio();
@@ -1241,6 +1255,36 @@
             // Game loop
             Events.on(gameState.engine, 'beforeUpdate', gameLoop);
             Events.on(gameState.engine, 'collisionStart', handleCollisions);
+
+            // After render: for drawing custom elements like ghost previews
+            Events.on(gameState.render, 'afterRender', () => {
+                const ctx = gameState.render.context;
+                Render.startViewTransform(gameState.render); // Apply viewport transformations
+
+                // Draw ghost preview if data exists
+                if (gameState.ghostPreviewData && gameState.isDragging && gameState.ghostPreviewData.vertices.length > 0) {
+                    const ghost = gameState.ghostPreviewData;
+                    ctx.beginPath();
+                    ctx.moveTo(ghost.vertices[0].x, ghost.vertices[0].y);
+                    for (let i = 1; i < ghost.vertices.length; i++) {
+                        ctx.lineTo(ghost.vertices[i].x, ghost.vertices[i].y);
+                    }
+                    ctx.closePath();
+
+                    ctx.globalAlpha = 0.4; // Ghost transparency
+                    ctx.fillStyle = ghost.fillStyle || 'rgba(100, 180, 255, 0.5)'; // Default if no fillStyle
+                    ctx.fill();
+
+                    if (ghost.strokeStyle && (ghost.lineWidth || 1) !== 0) {
+                        ctx.strokeStyle = ghost.strokeStyle;
+                        ctx.lineWidth = ghost.lineWidth || 1;
+                        ctx.stroke();
+                    }
+                    ctx.globalAlpha = 1.0; // Reset globalAlpha
+                }
+
+                Render.endViewTransform(gameState.render); // Restore context
+            });
         }
 
         function resizeCanvas() {
@@ -1275,7 +1319,8 @@
             });
             
             // Canvas click for welding mode
-            gameState.canvas.addEventListener('click', handleCanvasClick);
+            gameState.canvas.addEventListener('click', handleCanvasClick); // Will be main click handler (mouseup)
+            gameState.canvas.addEventListener('mousedown', startDragOnCanvas); // For initiating part repositioning
             
             // Global drag events
             document.addEventListener('mousemove', handleDrag);
@@ -1293,6 +1338,27 @@
             document.getElementById('loadBtn').addEventListener('click', loadRobot);
             document.getElementById('battleBtn').addEventListener('click', startBattle);
             document.getElementById('backToWorkshop').addEventListener('click', backToWorkshop);
+
+            // Touch Point Indicator Element
+            const touchIndicator = document.createElement('div');
+            touchIndicator.id = 'touchPointIndicator';
+            touchIndicator.style.position = 'absolute';
+            touchIndicator.style.width = '20px';
+            touchIndicator.style.height = '20px';
+            touchIndicator.style.borderRadius = '50%';
+            touchIndicator.style.backgroundColor = 'rgba(0, 212, 255, 0.5)'; // Semi-transparent blue
+            touchIndicator.style.border = '2px solid rgba(255, 255, 255, 0.7)';
+            touchIndicator.style.pointerEvents = 'none'; // Crucial
+            touchIndicator.style.display = 'none'; // Initially hidden
+            touchIndicator.style.zIndex = '1001';
+            // Append to a container that overlays the canvas, e.g., connectionPoints div or build-area
+            const buildArea = document.querySelector('.build-area');
+            if (buildArea) {
+                buildArea.appendChild(touchIndicator); // Appending to build-area which is parent of canvas
+            } else { // Fallback if .build-area is not found for some reason
+                gameState.canvas.parentElement.appendChild(touchIndicator);
+            }
+            gameState.touchIndicatorElement = touchIndicator;
 
             // Mouse wheel listener for part rotation
             document.addEventListener('wheel', function(e) {
@@ -1349,35 +1415,156 @@
             document.body.classList.toggle('welding-mode', mode === 'weld');
             
             // Clear any selections when switching modes
-            clearWeldSelection();
+            clearWeldSelection(); // Clears welding specific selection
+            if (gameState.selectedParts.length > 0) { // Clear general selection too
+                clearGeneralSelection();
+                updateSelectionVisuals();
+            }
             
             playSound('click');
         }
 
         // Welding System
-        function handleCanvasClick(e) {
-            if (gameState.toolMode !== 'weld' || gameState.mode !== 'assembly') return;
+        function handleCanvasClick(e) { // This is effectively a 'mouseup' click handler for the canvas
+            if (gameState.mode !== 'assembly') return;
+
+            // If a drag operation just finished (isDragging is true but will be set false by endDrag),
+            // then this click should not re-process selection. endDrag handles drag completion.
+            // However, isDragging might already be false if the drag ended off-canvas or was short.
+            // The key is differentiating a click from a drag action.
             
+            const timeSinceMouseDown = Date.now() - (gameState.mouseDownTimeForClick || Date.now()); // Ensure mouseDownTimeForClick is not 0
             const rect = gameState.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
+            const partUp = getPartAtPosition(x,y);
+
+            // If isDragging is true here, it means a drag just ended on the canvas.
+            // We let endDrag handle its logic. We only want click logic if it wasn't a drag.
+            if (gameState.isDragging) {
+                 // If it was a repositioning drag, endDrag clears isRepositioning.
+                 // If it was a new part drag, endDrag clears dragPart.
+                 // We mostly let endDrag handle state, but reset click trackers here.
+                gameState.mouseDownTargetForClick = null;
+                gameState.mouseDownTimeForClick = 0;
+                return;
+            }
+
+            // Logic for selection/deselection on click, or weld point selection
+            if (gameState.toolMode === 'weld') {
+                if (gameState.selectedParts.length > 0) clearGeneralSelection();
+
+                const clickedPartForWeld = getPartAtPosition(x, y); // x, y are already canvas coords
+                if (clickedPartForWeld) {
+                    selectPartForWeld(clickedPartForWeld);
+                }
+                // No updateSelectionVisuals() here as weld selection has its own visual cues.
+                return;
+            }
             
-            // Find clicked part
-            const clickedPart = getPartAtPosition(x, y);
-            if (!clickedPart) return;
+            // General selection click logic for 'build' or 'edit' mode
+            if (timeSinceMouseDown < 250 && gameState.mouseDownTargetForClick === partUp ) { // Threshold of 250ms for a click
+                if (gameState.mouseDownTargetForClick) { // Clicked on a part
+                    togglePartSelection(gameState.mouseDownTargetForClick);
+                } else { // Clicked on empty space
+                    clearGeneralSelection();
+                }
+                updateSelectionVisuals();
+            } else if (timeSinceMouseDown < 250 && !partUp && !gameState.mouseDownTargetForClick) {
+                // Clicked on empty space (and mousedown was also on empty space)
+                clearGeneralSelection();
+                updateSelectionVisuals();
+            }
             
-            selectPartForWeld(clickedPart);
+            // Reset mousedown trackers
+            gameState.mouseDownTargetForClick = null;
+            gameState.mouseDownTimeForClick = 0;
         }
 
         function getPartAtPosition(x, y) {
-            for (let part of gameState.playerRobot) {
-                const bounds = part.bounds;
-                if (x >= bounds.min.x && x <= bounds.max.x && 
-                    y >= bounds.min.y && y <= bounds.max.y) {
-                    return part;
+            const allPlayerParts = gameState.playerRobot;
+            const foundBodies = Matter.Query.point(allPlayerParts, { x, y });
+
+            if (foundBodies.length > 0) {
+                // To get the last added part that was hit (often visually on top):
+                // Iterate playerRobot in reverse to find the last one that's in foundBodies.
+                for (let i = allPlayerParts.length - 1; i >= 0; i--) {
+                    const part = allPlayerParts[i];
+                    // Check if this part's main body is among those found by Query.point
+                    // This is important if parts are compounds; Query.point might return a sub-body.
+                    // For simple parts, part === foundBody is fine.
+                    // For compound, need to check if part is one of the foundBodies or if a foundBody belongs to part.
+                    // Assuming simple (non-compound) player parts for now:
+                    if (foundBodies.includes(part)) {
+                        return part;
+                    }
                 }
+                // Fallback if the above loop didn't find a direct match (e.g. if Query.point returned sub-bodies of a compound)
+                // or if order isn't strictly last-on-top. For now, simple first found.
+                // A truly robust solution for compound bodies would need to map found sub-bodies back to their parent part.
+                // For current setup where playerRobot stores parent bodies, this should be okay.
+                return foundBodies[0]; // Return the first one found by Query.point as a basic fallback.
             }
             return null;
+        }
+
+        function clearGeneralSelection() {
+            // Before clearing, revert visuals of currently selected parts
+            gameState.selectedParts.forEach(p => {
+                if (p.customProps) {
+                     p.render.strokeStyle = p.customProps.originalStrokeStyle || '#ffffff';
+                     p.render.lineWidth = p.customProps.originalLineWidth || 2;
+                }
+            });
+            gameState.selectedParts = [];
+        }
+
+        function togglePartSelection(part) {
+            const index = gameState.selectedParts.indexOf(part);
+            if (index === -1) {
+                // Part not selected, select it (single selection for now)
+                clearGeneralSelection(); // Clear previous selections for single select
+                gameState.selectedParts.push(part);
+                // For multi-select with Shift (example):
+                // if (!gameState.keys.shift) clearGeneralSelection();
+                // if (!gameState.selectedParts.includes(part)) gameState.selectedParts.push(part);
+            } else {
+                // Part already selected, deselect it
+                gameState.selectedParts.splice(index, 1);
+                // Revert its style immediately as it's deselected from a potential group
+                if (part.customProps) {
+                    part.render.strokeStyle = part.customProps.originalStrokeStyle || '#ffffff';
+                    part.render.lineWidth = part.customProps.originalLineWidth || 2;
+                }
+            }
+        }
+
+        function updateSelectionVisuals() {
+            // Reset visuals for all parts to their defaults first,
+            // only if they are not in the current selection.
+            gameState.playerRobot.forEach(part => {
+                if (part.customProps && !gameState.selectedParts.includes(part)) {
+                     part.render.strokeStyle = part.customProps.originalStrokeStyle || '#ffffff';
+                     part.render.lineWidth = part.customProps.originalLineWidth || 2;
+                }
+            });
+
+            // Then, apply selection visuals to currently selected parts
+            gameState.selectedParts.forEach(part => {
+                if (!part.customProps) return;
+
+                // Original style should have been stored on creation/load.
+                // If not, this check is a fallback but ideally originalStrokeStyle/LineWidth are always set.
+                if (part.customProps.originalStrokeStyle === undefined) {
+                    part.customProps.originalStrokeStyle = part.render.strokeStyle;
+                }
+                if (part.customProps.originalLineWidth === undefined) {
+                    part.customProps.originalLineWidth = part.render.lineWidth;
+                }
+
+                part.render.strokeStyle = gameState.selectionColor;
+                part.render.lineWidth = 3;
+            });
         }
 
         function selectPartForWeld(part) {
@@ -1548,6 +1735,7 @@
             
             gameState.isDragging = true;
             gameState.dragPart = partType;
+            gameState.activeSnapCandidate = null; // Clear any previous snap candidate
             
             // Create visual preview
             createDragPreview(e);
@@ -1607,101 +1795,415 @@
         }
 
         function handleDrag(e) {
-            if (!gameState.isDragging || !gameState.dragPreview) return;
-            
-            const x = e.clientX || (e.touches && e.touches[0].clientX);
-            const y = e.clientY || (e.touches && e.touches[0].clientY);
-            
-            gameState.dragPreview.style.left = (x - 30) + 'px';
-            gameState.dragPreview.style.top = (y - 30) + 'px';
-            
-            // Check for snap targets
-            checkSnapTargets(x, y);
+            if (!gameState.isDragging) return;
+
+            const rawClientX = e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX);
+            const rawClientY = e.clientY || (e.touches && e.touches[0] && e.touches[0].clientY);
+
+            if (typeof rawClientX !== 'number' || typeof rawClientY !== 'number') return;
+
+            const canvasRect = gameState.canvas.getBoundingClientRect();
+            const canvasMouseX = rawClientX - canvasRect.left;
+            const canvasMouseY = rawClientY - canvasRect.top;
+
+            if (gameState.isRepositioning && gameState.repositioningPart) {
+                const logicalTargetX = canvasMouseX - gameState.dragStartOffset.x;
+                const logicalTargetY = canvasMouseY - gameState.dragStartOffset.y;
+
+                if (gameState.isTouchDevice && e.touches) {
+                    gameState.actualTouchPoint = { x: canvasMouseX, y: canvasMouseY };
+                } else {
+                    gameState.actualTouchPoint = null;
+                }
+
+                Body.setPosition(gameState.repositioningPart, { x: logicalTargetX, y: logicalTargetY });
+                checkSnapTargets(logicalTargetX, logicalTargetY, gameState.repositioningPart);
+
+                // Update ghost preview for repositioning part
+                const partRp = gameState.repositioningPart;
+                const partTypeRp = partRp.customProps.partType;
+                let ghostAngleRp = partRp.customProps.angle || 0;
+                let ghostScaleRp = partRp.customProps.scale || 1.0;
+                // Default ghost to where the part is currently physically being dragged by Body.setPosition
+                let ghostTargetPosRp = {x: logicalTargetX, y: logicalTargetY};
+
+                if (gameState.activeSnapCandidate && gameState.activeSnapCandidate.sourcePartRepresentation === partRp) {
+                    ghostTargetPosRp = gameState.activeSnapCandidate.snappedPosition;
+                    ghostAngleRp = gameState.activeSnapCandidate.snappedAngle;
+                }
+
+                const worldVerticesRp = getGhostVertices(partTypeRp, ghostTargetPosRp, ghostAngleRp, ghostScaleRp);
+                gameState.ghostPreviewData = {
+                    vertices: worldVerticesRp,
+                    fillStyle: partRp.render.fillStyle,
+                    strokeStyle: partRp.render.strokeStyle,
+                    lineWidth: partRp.render.lineWidth,
+                    isGhost: true
+                };
+                // updateConnectionPointsDisplay is called by checkSnapTargets or endDrag
+
+                if (e.touches) e.preventDefault(); // Prevent scrolling on touch devices
+
+            } else if (gameState.dragPreview && gameState.dragPart) { // Dragging a new part from palette
+                let logicalX = canvasMouseX;
+                let logicalY = canvasMouseY;
+
+                // For display, dragPreview uses raw screen coordinates (rawClientX, rawClientY)
+                // and then applies offset if on touch.
+                let displayX = rawClientX;
+                let displayY = rawClientY;
+
+                if (gameState.isTouchDevice && e.touches) {
+                    // Apply offset for the visual preview element
+                    displayX -= gameState.touchOffset.x; // x offset is 0 in current settings
+                    displayY -= gameState.touchOffset.y; // y offset is -60 (so adds 60, moving preview up)
+                    
+                    // Store the actual touch point (logical canvas coordinates)
+                    gameState.actualTouchPoint = { x: canvasMouseX, y: canvasMouseY };
+                } else {
+                    gameState.actualTouchPoint = null;
+                }
+
+                // Center the preview element on the display coordinates
+                gameState.dragPreview.style.left = (displayX - (gameState.dragPreview.offsetWidth / 2)) + 'px';
+                gameState.dragPreview.style.top = (displayY - (gameState.dragPreview.offsetHeight / 2)) + 'px';
+
+                // Snapping logic uses the logical (un-offset) canvas coordinates
+                checkSnapTargets(logicalX, logicalY);
+
+                // Update ghost preview for new part
+                const ghostAngleNp = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedAngle : gameState.dragPartAngle;
+                const ghostScaleNp = gameState.dragPartScale;
+                const ghostTargetPosNp = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedPosition : { x: logicalX, y: logicalY };
+                const componentNp = gameState.components[gameState.dragPart];
+
+                if (componentNp) {
+                    const worldVerticesNp = getGhostVertices(gameState.dragPart, ghostTargetPosNp, ghostAngleNp, ghostScaleNp);
+                    gameState.ghostPreviewData = {
+                        vertices: worldVerticesNp,
+                        fillStyle: componentNp.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 1,
+                        isGhost: true
+                    };
+                } else {
+                    gameState.ghostPreviewData = null;
+                }
+
+                // Update ghost preview for new part
+                const ghostAngleNp = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedAngle : gameState.dragPartAngle;
+                const ghostScaleNp = gameState.dragPartScale;
+                const ghostTargetPosNp = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedPosition : { x: logicalX, y: logicalY };
+                const componentNp = gameState.components[gameState.dragPart];
+
+                if (componentNp) {
+                    const worldVerticesNp = getGhostVertices(gameState.dragPart, ghostTargetPosNp, ghostAngleNp, ghostScaleNp);
+                    gameState.ghostPreviewData = {
+                        vertices: worldVerticesNp,
+                        fillStyle: componentNp.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 1,
+                        isGhost: true
+                    };
+                } else {
+                    gameState.ghostPreviewData = null;
+                }
+                if (e.touches) e.preventDefault(); // Prevent scrolling on touch devices
+
+                // Update ghost preview for new part
+                const ghostAngle = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedAngle : gameState.dragPartAngle;
+                const ghostScale = gameState.dragPartScale; // Scale is not affected by snap candidate currently
+                const ghostTargetPos = gameState.activeSnapCandidate ? gameState.activeSnapCandidate.snappedPosition : { x: logicalX, y: logicalY };
+                const component = gameState.components[gameState.dragPart];
+
+                if (component) {
+                    const worldVertices = getGhostVertices(gameState.dragPart, ghostTargetPos, ghostAngle, ghostScale);
+                    gameState.ghostPreviewData = {
+                        vertices: worldVertices,
+                        fillStyle: component.color,
+                        strokeStyle: '#ffffff',
+                        lineWidth: 1,
+                        isGhost: true
+                    };
+                } else {
+                    gameState.ghostPreviewData = null;
+                }
+
+            } else if (gameState.isRepositioning && gameState.repositioningPart) { // Was the (isRepositioning && repositioningPart) block
+                const part = gameState.repositioningPart;
+                const partType = part.customProps.partType;
+                let ghostAngle = part.customProps.angle || 0;
+                let ghostScale = part.customProps.scale || 1.0;
+                let ghostTargetPos = {x: part.position.x, y: part.position.y}; // Default to current physical position
+
+                if (gameState.activeSnapCandidate && gameState.activeSnapCandidate.sourcePartRepresentation === part) {
+                    ghostTargetPos = gameState.activeSnapCandidate.snappedPosition;
+                    ghostAngle = gameState.activeSnapCandidate.snappedAngle;
+                }
+
+                const worldVertices = getGhostVertices(partType, ghostTargetPos, ghostAngle, ghostScale);
+                gameState.ghostPreviewData = {
+                    vertices: worldVertices,
+                    fillStyle: part.render.fillStyle,
+                    strokeStyle: part.render.strokeStyle,
+                    lineWidth: part.render.lineWidth,
+                    isGhost: true
+                };
+            } else { // Not dragging anything relevant for ghost
+                 gameState.ghostPreviewData = null;
+            }
+
+
+            // Update touch indicator display
+            if (gameState.isTouchDevice && gameState.actualTouchPoint && gameState.isDragging) {
+                gameState.touchIndicatorElement.style.left = (gameState.actualTouchPoint.x - (gameState.touchIndicatorElement.offsetWidth / 2)) + 'px';
+                gameState.touchIndicatorElement.style.top = (gameState.actualTouchPoint.y - (gameState.touchIndicatorElement.offsetHeight / 2)) + 'px';
+                gameState.touchIndicatorElement.style.display = 'block';
+            } else if (gameState.touchIndicatorElement && gameState.touchIndicatorElement.style.display !== 'none') {
+                gameState.touchIndicatorElement.style.display = 'none';
+            }
         }
 
-        function checkSnapTargets(x, y) {
-            const canvasRect = gameState.canvas.getBoundingClientRect();
-            const canvasX = x - canvasRect.left;
-            const canvasY = y - canvasRect.top;
-            
-            gameState.snapTarget = null;
-            
-            // Find closest connection point
-            let closestDistance = Infinity;
-            
-            gameState.playerRobot.forEach(part => {
-                if (!part.customProps.connectionPoints) return;
+        function checkSnapTargets(evalX, evalY, partToIgnore = null) {
+            let oldSnapCandidateJSON = JSON.stringify(gameState.activeSnapCandidate);
+            gameState.activeSnapCandidate = null;
+            let closestSnapDistance = gameState.snapRadius;
 
-                const partAngle = part.customProps.angle || 0;
-                const cosAngle = Math.cos(partAngle);
-                const sinAngle = Math.sin(partAngle);
-                
-                part.customProps.connectionPoints.forEach(localCPoint => { // Renamed 'point' to 'localCPoint' for clarity
-                    // Rotate local connection point by part's angle
-                    const rotatedLocalX = localCPoint.x * cosAngle - localCPoint.y * sinAngle;
-                    const rotatedLocalY = localCPoint.x * sinAngle + localCPoint.y * cosAngle;
+            const isRepositioning = !!partToIgnore;
+            let sourceComponentDef, currentAngle, currentScale, currentSourceCenter;
 
-                    const worldX = part.position.x + rotatedLocalX;
-                    const worldY = part.position.y + rotatedLocalY;
+            if (isRepositioning) {
+                sourceComponentDef = gameState.components[partToIgnore.customProps.partType];
+                currentAngle = partToIgnore.customProps.angle || 0;
+                currentScale = partToIgnore.customProps.scale || 1.0;
+                currentSourceCenter = partToIgnore.position;
+            } else {
+                if (!gameState.dragPart) return;
+                sourceComponentDef = gameState.components[gameState.dragPart];
+                currentAngle = gameState.dragPartAngle;
+                currentScale = gameState.dragPartScale;
+                currentSourceCenter = { x: evalX, y: evalY };
+            }
+
+            if (!sourceComponentDef || !sourceComponentDef.connectionPoints || sourceComponentDef.connectionPoints.length === 0) {
+                if (oldSnapCandidateJSON !== JSON.stringify(gameState.activeSnapCandidate)) {
+                    updateConnectionPointsDisplay(partToIgnore);
+                }
+                return;
+            }
+
+            const sourcePartRepresentation = partToIgnore || {
+                componentDef: sourceComponentDef,
+                angle: currentAngle,
+                scale: currentScale,
+                customProps: { partType: gameState.dragPart, angle: currentAngle, scale: currentScale }
+            };
+
+            sourceComponentDef.connectionPoints.forEach(srcLocalDef => {
+                let scaledSrcLocalX = srcLocalDef.x;
+                let scaledSrcLocalY = srcLocalDef.y;
+
+                if (sourceComponentDef.scalable) {
+                    const scaleDim = sourceComponentDef.scaleDimension;
+                    if (scaleDim === 'width' || scaleDim === 'both') scaledSrcLocalX *= currentScale;
+                    if (scaleDim === 'height' || scaleDim === 'both') scaledSrcLocalY *= currentScale;
+                }
+                const rotatedScaledSrcLocal = Matter.Vector.rotate({ x: scaledSrcLocalX, y: scaledSrcLocalY }, currentAngle);
+
+                const sourcePointCurrentWorld = {
+                    x: currentSourceCenter.x + rotatedScaledSrcLocal.x,
+                    y: currentSourceCenter.y + rotatedScaledSrcLocal.y
+                };
+
+                gameState.playerRobot.forEach(staticPart => {
+                    if (staticPart === partToIgnore || !staticPart.customProps || !staticPart.customProps.connectionPoints) return;
+
+                    const staticPartAngle = staticPart.customProps.angle || 0;
                     
-                    const distance = Math.sqrt(
-                        Math.pow(canvasX - worldX, 2) + 
-                        Math.pow(canvasY - worldY, 2)
-                    );
-                    
-                    if (distance < 50 && distance < closestDistance) { // Snap radius of 50px
-                        closestDistance = distance;
-                        gameState.snapTarget = {
-                            part: part,
-                            point: { x: worldX, y: worldY }, // World coordinates of the snap point
-                            localPoint: localCPoint // Original local coordinates on the target part
+                    staticPart.customProps.connectionPoints.forEach(staticLocalProcessed => {
+                        const rotatedStaticLocal = Matter.Vector.rotate(staticLocalProcessed, staticPartAngle);
+                        const staticPointWorld = {
+                            x: staticPart.position.x + rotatedStaticLocal.x,
+                            y: staticPart.position.y + rotatedStaticLocal.y
                         };
-                    }
+
+                        const distance = Matter.Vector.magnitude(Matter.Vector.sub(staticPointWorld, sourcePointCurrentWorld));
+
+                        if (distance < closestSnapDistance) {
+                            closestSnapDistance = distance;
+
+                            const snappedPosition = {
+                                x: staticPointWorld.x - rotatedScaledSrcLocal.x,
+                                y: staticPointWorld.y - rotatedScaledSrcLocal.y
+                            };
+
+                            gameState.activeSnapCandidate = {
+                                targetPart: staticPart,
+                                targetPointLocal: staticLocalProcessed,
+                                targetPointWorld: staticPointWorld,
+                                sourcePartRepresentation: sourcePartRepresentation,
+                                sourcePointLocalDefinition: { x: srcLocalDef.x, y: srcLocalDef.y, type: srcLocalDef.type },
+                                snappedPosition: snappedPosition,
+                                snappedAngle: currentAngle
+                            };
+                        }
+                    });
                 });
             });
             
-            updateConnectionPointsDisplay();
+            if (oldSnapCandidateJSON !== JSON.stringify(gameState.activeSnapCandidate)) {
+                updateConnectionPointsDisplay(partToIgnore);
+            }
         }
 
         function endDrag(e) {
             if (!gameState.isDragging) return;
             
-            const x = e.clientX || (e.changedTouches && e.changedTouches[0].clientX);
-            const y = e.clientY || (e.changedTouches && e.changedTouches[0].clientY);
-            
-            // Check if dropped on canvas
-            const canvasRect = gameState.canvas.getBoundingClientRect();
-            const inCanvas = x >= canvasRect.left && x <= canvasRect.right && 
-                           y >= canvasRect.top && y <= canvasRect.bottom;
-            
-            if (inCanvas) {
-                const canvasX = x - canvasRect.left;
-                const canvasY = y - canvasRect.top;
-                
-                let spawnX = canvasX;
-                let spawnY = canvasY;
-                
-                if (gameState.snapTarget) {
-                    spawnX = gameState.snapTarget.point.x;
-                    spawnY = gameState.snapTarget.point.y;
+            // Use raw clientX/Y to determine logical canvas coordinates for placement if not snapping.
+            const rawClientX_end = e.clientX || (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientX);
+            const rawClientY_end = e.clientY || (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientY);
+
+            // Logic for dropping a new part from palette
+            if (gameState.dragPart && !gameState.isRepositioning) {
+                // Check if the drop occurred within the canvas boundaries
+                const canvasRect_end = gameState.canvas.getBoundingClientRect();
+                const inCanvas_end = typeof rawClientX_end === 'number' && typeof rawClientY_end === 'number' &&
+                                   rawClientX_end >= canvasRect_end.left && rawClientX_end <= canvasRect_end.right &&
+                                   rawClientY_end >= canvasRect_end.top && rawClientY_end <= canvasRect_end.bottom;
+
+                if (inCanvas_end) {
+                    // Determine logical spawn coordinates
+                    let logicalSpawnX = rawClientX_end - canvasRect_end.left;
+                    let logicalSpawnY = rawClientY_end - canvasRect_end.top;
+
+                    let spawnX = logicalSpawnX;
+                    let spawnY = logicalSpawnY;
+                    let angleToSpawn = gameState.dragPartAngle;
+                    let scaleToSpawn = gameState.dragPartScale;
+
+                    if (gameState.activeSnapCandidate) {
+                        const snapInfo = gameState.activeSnapCandidate;
+                        // Check if the snap candidate's source matches the current drag operation
+                        if (snapInfo.sourcePartRepresentation.componentDef === gameState.components[gameState.dragPart]) {
+                            spawnX = snapInfo.snappedPosition.x;
+                            spawnY = snapInfo.snappedPosition.y;
+                            angleToSpawn = snapInfo.snappedAngle;
+                            // scaleToSpawn remains gameState.dragPartScale
+                            playSound('snap');
+                            triggerSnapVisualFeedback(snapInfo.targetPointWorld);
+                        }
+                    }
+                    createPart(gameState.dragPart, spawnX, spawnY, angleToSpawn, scaleToSpawn);
                 }
-                
-                createPart(gameState.dragPart, spawnX, spawnY, gameState.dragPartAngle, gameState.dragPartScale);
+            }
+            // Logic for ending a repositioning drag
+            else if (gameState.isRepositioning && gameState.repositioningPart) {
+                if (gameState.activeSnapCandidate &&
+                    gameState.activeSnapCandidate.sourcePartRepresentation === gameState.repositioningPart) {
+
+                    const snapInfo = gameState.activeSnapCandidate;
+                    Body.setPosition(gameState.repositioningPart, snapInfo.snappedPosition);
+                    Body.setAngle(gameState.repositioningPart, snapInfo.snappedAngle);
+
+                    if (snapInfo.targetPart && snapInfo.sourcePointLocalDefinition) {
+                        let finalSourcePointB_reposition = { ...snapInfo.sourcePointLocalDefinition };
+                        const repositionedPartScale = gameState.repositioningPart.customProps.scale || 1.0;
+                        const componentDef = gameState.components[gameState.repositioningPart.customProps.partType];
+
+                        if (componentDef && componentDef.scalable) {
+                            if (componentDef.scaleDimension === 'width' || componentDef.scaleDimension === 'both') {
+                                finalSourcePointB_reposition.x *= repositionedPartScale;
+                            }
+                            if (componentDef.scaleDimension === 'height' || componentDef.scaleDimension === 'both') {
+                                // Assuming y connection points are scaled with height, if applicable.
+                                // This part of scaling logic for connection points might need to be consistent
+                                // with how createPart scales them. For now, only scaling x if width-scalable.
+                                // If createPart scales y for height-scalable parts, mirror here.
+                                // Based on createPart, it seems only x is scaled for 'width', no separate y scaling.
+                            }
+                        }
+
+                         const constraint = Constraint.create({
+                            bodyA: snapInfo.targetPart,
+                            bodyB: gameState.repositioningPart,
+                            pointA: snapInfo.targetPointLocal,
+                            pointB: finalSourcePointB_reposition,
+                            length: 0,
+                            stiffness: 0.8,
+                            render: { visible: true, strokeStyle: '#00ff88' }
+                        });
+                        World.add(gameState.engine.world, constraint);
+                        playSound('snap');
+                        triggerSnapVisualFeedback(snapInfo.targetPointWorld);
+                    }
+                }
+                // Position is already set by handleDrag if not snapping.
+                // updateUI(); // Consider if needed for stats panel etc.
             }
             
-            // Cleanup
+            // General Cleanup for all drag operations
             gameState.isDragging = false;
             gameState.dragPart = null;
-            gameState.dragPartAngle = 0; // Reset angle
-            gameState.dragPartScale = 1.0; // Reset scale
-            gameState.snapTarget = null;
-            
+            gameState.dragPartAngle = 0;
+            gameState.dragPartScale = 1.0;
             if (gameState.dragPreview) {
                 gameState.dragPreview.remove();
                 gameState.dragPreview = null;
             }
+            gameState.isRepositioning = false;
+            gameState.repositioningPart = null;
+            gameState.activeSnapCandidate = null;
+            gameState.actualTouchPoint = null; // Clear actual touch point
+            gameState.ghostPreviewData = null; // Clear ghost preview data
+
+            if (gameState.touchIndicatorElement && gameState.touchIndicatorElement.style.display !== 'none') {
+                gameState.touchIndicatorElement.style.display = 'none'; // Hide touch indicator
+            }
             
-            updateConnectionPointsDisplay();
+            updateConnectionPointsDisplay(); // Final update to clear snap highlights and show current state
+        }
+
+        function getGhostVertices(componentKey, targetPos, angle, scale) {
+            const component = gameState.components[componentKey];
+            if (!component) return [];
+
+            let baseVertices;
+            if (component.vertices) { // Polygon
+                baseVertices = Matter.Vertices.clone(component.vertices);
+            } else if (component.radius) { // Circle
+                let scaledRadius = component.radius;
+                // Scaling for circles should apply directly to radius before polygon creation
+                if (component.scalable && (component.scaleDimension === 'radius' || component.scaleDimension === 'both' || !component.scaleDimension)) { // Assume uniform scale if not specified
+                    scaledRadius *= scale;
+                }
+                const circlePoly = Matter.Bodies.polygon(0, 0, 16, scaledRadius, { render: { visible: false } }); // 16 sides, no render
+                baseVertices = Matter.Vertices.clone(circlePoly.vertices);
+                 // Vertices from Bodies.polygon are already relative to (0,0) if body created at (0,0)
+            } else { // Rectangle
+                // For rectangles, width/height are primary, vertices derived.
+                // Create a temporary body to get correctly centered vertices before scaling.
+                const tempRectBody = Matter.Bodies.rectangle(0, 0, component.width, component.height, { render: { visible: false } });
+                baseVertices = Matter.Vertices.clone(tempRectBody.vertices);
+            }
+
+            // Scale vertices if the component is scalable
+            // This scaling is for rects/polygons where vertices are defined then scaled. Circle radius is prescaled.
+            if (component.scalable && !component.radius) { // Don't re-scale circle polygons, radius was already scaled
+                const scaleFactorX = (component.scaleDimension === 'width' || component.scaleDimension === 'both') ? scale : 1.0;
+                const scaleFactorY = (component.scaleDimension === 'height' || component.scaleDimension === 'both') ? scale : 1.0;
+                // Ensure scaling happens from the center (0,0) for base vertices
+                if (scaleFactorX !== 1.0 || scaleFactorY !== 1.0) {
+                    baseVertices = Matter.Vertices.scale(baseVertices, scaleFactorX, scaleFactorY, { x: 0, y: 0 });
+                }
+            }
+
+            // Rotate vertices around (0,0)
+            if (angle !== 0) {
+                baseVertices = Matter.Vertices.rotate(baseVertices, angle, { x: 0, y: 0 });
+            }
+
+            // Translate vertices to the target world position
+            return Matter.Vertices.translate(baseVertices, targetPos, 1); // 1 is for multiplying vector
         }
 
         // Part Creation
@@ -1827,6 +2329,10 @@
             
             Body.setAngle(body, angle); // Set initial angle for Matter.js body
 
+            // Store original rendering style for selection highlighting
+            body.customProps.originalStrokeStyle = body.render.strokeStyle || '#ffffff';
+            body.customProps.originalLineWidth = body.render.lineWidth || 2;
+
             // Set collision group
             body.collisionFilter.group = -1;
             
@@ -1839,38 +2345,36 @@
                 gameState.playerChassis = body;
             }
             
-            // Create constraint if snapped
-            if (gameState.snapTarget) {
-                const bodyA = gameState.snapTarget.part;
-                const bodyB = body;
-                const pointA = gameState.snapTarget.localPoint;
+            // Create constraint if snapped (using activeSnapCandidate) - This is for NEW part placement
+            if (gameState.activeSnapCandidate &&
+                gameState.dragPart === partType && // Ensure this snap is for the current part being created from palette
+                gameState.activeSnapCandidate.sourcePartRepresentation.componentDef === component) {
 
-                // Calculate pointB - the local point on bodyB that corresponds to the world snap point
-                const worldSnapX = gameState.snapTarget.point.x;
-                const worldSnapY = gameState.snapTarget.point.y;
+                const snapInfo = gameState.activeSnapCandidate;
+                let finalSourcePointB = { ...snapInfo.sourcePointLocalDefinition }; // Use the original definition
 
-                // bodyB.position is the spawnX, spawnY passed to createPart
-                const dx = worldSnapX - bodyB.position.x;
-                const dy = worldSnapY - bodyB.position.y;
-
-                const angleB = angle; // Angle of the new body (bodyB)
-                const cos_angleB = Math.cos(-angleB); // Use negative angle for inverse transform
-                const sin_angleB = Math.sin(-angleB);
-
-                const localBx = dx * cos_angleB - dy * sin_angleB;
-                const localBy = dx * sin_angleB + dy * cos_angleB;
-                const pointB = { x: localBx, y: localBy };
+                // Apply scaling to this local point if the new part is scalable
+                if (component.scalable) {
+                    const scaleToApply = gameState.dragPartScale; // Scale of the part being created
+                    if (component.scaleDimension === 'width' || component.scaleDimension === 'both') {
+                        finalSourcePointB.x *= scaleToApply;
+                    }
+                    if (component.scaleDimension === 'height' || component.scaleDimension === 'both') {
+                        finalSourcePointB.y *= scaleToApply;
+                    }
+                }
+                // Angle is handled by Matter.js as bodyB (the new part) is already created with the target angle.
+                // So, pointB should be the (scaled) local definition point.
 
                 const constraint = Constraint.create({
-                    bodyA: bodyA,
-                    bodyB: bodyB,
-                    pointA: pointA,
-                    pointB: pointB,
+                    bodyA: snapInfo.targetPart,
+                    bodyB: body,
+                    pointA: snapInfo.targetPointLocal,
+                    pointB: finalSourcePointB,
                     length: 0,
-                    stiffness: 1,
-                    render: { visible: false }
+                    stiffness: 0.8,
+                    render: { visible: true, strokeStyle: '#00ff88' }
                 });
-                
                 World.add(gameState.engine.world, constraint);
             }
             
@@ -1966,7 +2470,7 @@
             // Calculate Performance Ratings
             const componentDefinitions = gameState.components; // For easy access
             const wheelCount = robot.filter(p => p.customProps.label === 'wheel').length;
-            const weaponCount = robot.filter(p => p.customProps.damage > 0).length;
+            const weaponCount = robot.filter(p => p.customProps.damage > 0 || p.customProps.baseDamage > 0 || p.customProps.baseDamagePerSecond > 0).length; // Include melee
             
             const armorComps = robot.filter(p => p.customProps.label === 'armor');
             const armorCount = armorComps.length;
@@ -2141,7 +2645,7 @@
                 totalHealth += part.customProps.health;
                 totalMass += part.customProps.mass;
                 
-                if (part.customProps.damage) weaponCount++;
+                if (part.customProps.damage || part.customProps.baseDamage || part.customProps.baseDamagePerSecond) weaponCount++; // Include melee
                 if (part.customProps.label === 'wheel') mobilityCount++;
             });
             
@@ -2195,14 +2699,15 @@
             battleBtn.textContent = canBattle ? 'START BATTLE' : 'FIX ISSUES TO BATTLE';
         }
 
-        function updateConnectionPointsDisplay() {
+        function updateConnectionPointsDisplay(partToExclude = null) {
             const container = document.getElementById('connectionPoints');
             container.innerHTML = '';
             
             if (gameState.mode !== 'assembly') return;
             
             gameState.playerRobot.forEach(part => {
-                if (!part.customProps.connectionPoints) return;
+                if (part === partToExclude) return; // Skip the part being moved/excluded
+                if (!part.customProps || !part.customProps.connectionPoints) return; // Added null check for customProps
                 
                 const partAngle = part.customProps.angle || 0;
                 const cosAngle = Math.cos(partAngle);
@@ -2222,13 +2727,19 @@
                     indicator.classList.add('cp-' + pointType);
                     
                     // Show during drag or if it's the snap target
-                    if (gameState.isDragging) {
+                    if (gameState.isDragging) { // Show all points when dragging generally
                         indicator.classList.add('visible');
-                        
-                        if (gameState.snapTarget && gameState.snapTarget.part === part &&
-                            gameState.snapTarget.localPoint === point) { // Ensure 'point' here refers to the original localCPoint from part.customProps.connectionPoints
-                            indicator.classList.add('snap-target');
-                        }
+                    }
+
+                    // Highlight the target point of an active snap candidate
+                    if (gameState.activeSnapCandidate &&
+                        gameState.activeSnapCandidate.targetPart === part &&
+                        // Ensure 'point' (which is staticLocalProcessed) matches the one stored in candidate
+                        gameState.activeSnapCandidate.targetPointLocal.x === point.x &&
+                        gameState.activeSnapCandidate.targetPointLocal.y === point.y &&
+                        gameState.activeSnapCandidate.targetPointLocal.type === point.type ) {
+                        indicator.classList.add('snap-target');
+                        if(!indicator.classList.contains('visible')) indicator.classList.add('visible'); // Make sure it's visible
                     }
                     
                     indicator.style.left = worldX + 'px';
@@ -2954,6 +3465,20 @@
                     gameState.keys.shift = true;
                     e.preventDefault();
                     break;
+                case 'escape': // Escape key
+                    if (gameState.mode === 'assembly') { // Only in assembly mode
+                        if (gameState.selectedParts.length > 0) {
+                            clearGeneralSelection();
+                            updateSelectionVisuals();
+                            e.preventDefault();
+                        }
+                        // Also clear welding selection if active
+                        if (gameState.selectedForWeld.length > 0) {
+                            clearWeldSelection(); // This calls updateWeldUI which should handle visuals
+                            e.preventDefault();
+                        }
+                    }
+                    break;
             }
         }
 
@@ -3022,6 +3547,79 @@
             });
             
             playSound('click');
+        }
+
+        function triggerSnapVisualFeedback(worldPoint) {
+            if (!worldPoint || typeof worldPoint.x !== 'number' || typeof worldPoint.y !== 'number') return;
+
+            const feedbackIndicator = document.createElement('div');
+            // feedbackIndicator.className = 'snap-feedback-indicator'; // Using inline styles as per plan
+            feedbackIndicator.style.position = 'absolute';
+            feedbackIndicator.style.left = (worldPoint.x - 12) + 'px'; // Centered on the point
+            feedbackIndicator.style.top = (worldPoint.y - 12) + 'px';
+            feedbackIndicator.style.width = '24px';
+            feedbackIndicator.style.height = '24px';
+            feedbackIndicator.style.borderRadius = '50%';
+            feedbackIndicator.style.backgroundColor = 'var(--accent-green)';
+            feedbackIndicator.style.opacity = '0.7';
+            feedbackIndicator.style.zIndex = '30';
+            feedbackIndicator.style.pointerEvents = 'none';
+            feedbackIndicator.style.transform = 'scale(0.5)';
+            feedbackIndicator.style.transition = 'transform 0.15s ease-out, opacity 0.15s ease-out';
+
+            const feedbackContainer = document.getElementById('connectionPoints') || gameState.canvas.parentElement;
+            feedbackContainer.appendChild(feedbackIndicator);
+
+            requestAnimationFrame(() => {
+                feedbackIndicator.style.transform = 'scale(1.2)';
+                feedbackIndicator.style.opacity = '0';
+            });
+
+            setTimeout(() => {
+                if (feedbackIndicator.parentElement) {
+                    feedbackIndicator.remove();
+                }
+            }, 150);
+        }
+
+        function startDragOnCanvas(e) {
+            if (gameState.mode !== 'assembly' || (gameState.toolMode !== 'build' && gameState.toolMode !== 'edit')) return;
+            // Do not proceed if currently trying to weld (based on weld mode active and potentially items selected for weld)
+            if (gameState.toolMode === 'weld') return; // Simplified: if in weld mode, mousedown on canvas doesn't start reposition
+
+            const rect = gameState.canvas.getBoundingClientRect();
+            const canvasX = e.clientX - rect.left;
+            const canvasY = e.clientY - rect.top;
+            const partUnderMouse = getPartAtPosition(canvasX, canvasY);
+
+            if (partUnderMouse && gameState.selectedParts.includes(partUnderMouse)) {
+                // Initiate repositioning drag
+                gameState.isRepositioning = true;
+                gameState.repositioningPart = partUnderMouse;
+                gameState.isDragging = true; // Master drag flag
+                gameState.activeSnapCandidate = null; // Clear any previous snap candidate
+
+                gameState.dragStartOffset = {
+                    x: canvasX - partUnderMouse.position.x,
+                    y: canvasY - partUnderMouse.position.y
+                };
+
+                gameState.dragPart = null; // Ensure no new part drag operation is active
+                if (gameState.dragPreview) {
+                    gameState.dragPreview.remove();
+                    gameState.dragPreview = null;
+                }
+
+                if (gameState.audioContext && gameState.audioContext.state === 'suspended') {
+                    gameState.audioContext.resume();
+                }
+                playSound('click');
+                e.preventDefault();
+            } else {
+                 // Store mousedown target for mouseup to decide if it's a click for selection
+                 gameState.mouseDownTargetForClick = partUnderMouse;
+                 gameState.mouseDownTimeForClick = Date.now();
+            }
         }
 
         function loadRobot() {
@@ -3180,6 +3778,10 @@
                 initialAngleCaptured: component.weaponType === 'melee_impact' ? false : undefined,
                 isSpinningActive: component.weaponType === 'continuous_melee' ? false : undefined
             };
+
+            // Store original rendering style for selection highlighting (after body.render is set up)
+            body.customProps.originalStrokeStyle = body.render.strokeStyle || '#ffffff';
+            body.customProps.originalLineWidth = body.render.lineWidth || 2;
             
             body.collisionFilter.group = -1;
             
@@ -3255,18 +3857,30 @@
                     oscillator.frequency.setValueAtTime(1200, gameState.audioContext.currentTime);
                     oscillator.frequency.exponentialRampToValueAtTime(800, gameState.audioContext.currentTime + duration);
                     break;
+                case 'snap':
+                    frequency = 1200;
+                    duration = 0.08;
+                    oscillator.type = 'triangle';
+                    // For snap, gain is set directly below, so no separate gainNode.gain.setValueAtTime here in the switch.
+                    break;
                 default:
                     return;
             }
             
-            if (type !== 'weld') {
+            // Set frequency for types not setting it specially (like weld)
+            if (type !== 'weld') { // Snap will also use this path for frequency
                 oscillator.frequency.setValueAtTime(frequency, gameState.audioContext.currentTime);
             }
             
             oscillator.start();
             oscillator.stop(gameState.audioContext.currentTime + duration);
             
-            gainNode.gain.setValueAtTime(0.3, gameState.audioContext.currentTime);
+            // Set gain: snap has custom gain, others use default
+            if (type === 'snap') {
+                gainNode.gain.setValueAtTime(0.2, gameState.audioContext.currentTime); // Softer for snap
+            } else {
+                gainNode.gain.setValueAtTime(0.3, gameState.audioContext.currentTime); // Standard gain
+            }
             gainNode.gain.exponentialRampToValueAtTime(0.01, gameState.audioContext.currentTime + duration);
         }
 
